@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dream-rsi-local",
+  "description": "Local marketplace for the Dream-RSI plugin (search memory that survives compaction, and the Dream-RSI exploration loop).",
+  "owner": {
+    "name": "fartsupreme",
+    "email": "332790274+fartsupreme@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "dream-rsi",
+      "description": "Stops long research sessions from re-trying what was already tried: an attempt tree on disk, a compact map, a novelty check before every attempt, and the Dream-RSI loop (arXiv 2609.14858) that tunes the exploration policy by replaying past attempts.",
+      "source": "./plugins/dream-rsi",
+      "category": "development",
+      "version": "0.3.2"
+    }
+  ]
+}

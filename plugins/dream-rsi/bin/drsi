@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# drsi — Dream-RSI campaign CLI. Resolves its own location through symlinks.
+set -euo pipefail
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ $src != /* ]] && src="$dir/$src"
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
+export PYTHONPATH="$here/../engine${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m drsi "$@"

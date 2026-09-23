@@ -1,0 +1,16 @@
+{
+  "_comment": "OPT-IN example. Not loaded by the plugin. To use, copy the hooks block into a project's .claude/settings.json and replace the ledger file name, the drsi path and the campaign name. It blocks edits to the attempt ledger unless a passing `drsi check` ran in the last 6 hours.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$(cat)\" in *ATTEMPTS.jsonl*) /path/to/dream-rsi/bin/drsi gate -c my-campaign --max-age-hours 6 ;; *) exit 0 ;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}
