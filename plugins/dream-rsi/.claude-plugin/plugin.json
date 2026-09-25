@@ -1,7 +1,7 @@
 {
   "name": "dream-rsi",
   "description": "Search memory that survives compaction (attempt tree, families, map, novelty check) plus the Dream-RSI exploration loop (arXiv 2609.14858) for long research campaigns.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "author": {
     "name": "fartsupreme",
     "email": "332790274+fartsupreme@users.noreply.github.com"

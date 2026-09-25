@@ -6,6 +6,7 @@ so it cannot drift from it and cannot be lost to compaction.
 from __future__ import annotations
 
 from .families import family_stats
+from .fingerprint import goal_sha
 
 _ORDER = {"open": 0, "plateau": 1, "dead": 2, "untried": 3}
 
@@ -20,9 +21,15 @@ def render_map(tree, families: dict | None, goal: str = "", max_chars: int = 160
     nodes = tree.nodes()
     fams = (families or {}).get("families") or []
     head = [f"# Search map — {len(nodes)} attempts, {len([f for f in fams if f['id'] != 'F00'])} families",
-            "", f"Goal: {_one(goal, 1500) or '(not stated)'}", "",
+            "", f"Goal: {_one(goal, 4000) or '(not stated)'}", "",
             "Protocol: read this map, then run `drsi check \"<your proposal>\"` BEFORE building anything. "
             "A duplicate verdict means pick something else. Record every attempt, including failures.", ""]
+    gsha = goal_sha(goal)
+    stale = sum(1 for n in nodes if (n.get("fingerprint") or {}).get("mechanism")
+                and n["fingerprint"].get("goal_sha") != gsha)
+    if stale:
+        head += [f"Note: {stale} attempts were read under an earlier goal, so what stopped them may be a rule "
+                 "the goal no longer has. Run `drsi fingerprint --stale` to read them again.", ""]
 
     fam_rows: list[str] = []
     if fams:
