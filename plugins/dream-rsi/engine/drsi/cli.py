@@ -166,20 +166,34 @@ def cmd_import(a) -> int:
     if report.get("skipped") or report.get("duplicates"):
         _err(f"  skipped {report['skipped']} malformed rows and {report['duplicates']} repeated ids")
     entry = {"path": src, "preset": a.preset, **({"field_map": field_map} if field_map else {})}
+    owners = {(n.get("ext") or {}).get("source_file") for n in camp.tree.nodes() if n.get("source") == "import"}
+    moved = {m for m in report.get("moved_from", ()) if m != src and m not in owners}  # wholly moved here
 
     def add_source(raw):
-        sources = raw.setdefault("sources", [])
+        # a ledger this one took attempts over from has moved here: follow it rather than keep both
+        sources = [s for s in raw.setdefault("sources", []) if s.get("path") not in moved]
         if entry not in sources:
             sources.append(entry)
+        raw["sources"] = sources
     camp.update_config(add_source)
-    print(f"{n} new attempts imported (total {len(tree)})")
+    if moved:
+        _err(f"  the ledger moved here from {', '.join(sorted(moved))}; that path is no longer a source")
+    _warn_relinked(report)
+    print(f"{n} new attempts imported, {report['refreshed']} refreshed (total {len(tree)})")
     return 0
 
 
-def _fingerprint(camp: Campaign, batch: int, workers: int) -> dict:
+def _warn_relinked(report: dict) -> None:
+    if report.get("relinked"):
+        ids = ", ".join("#" + i for i in report["relinked"][:10])
+        _err(f"  corrected rows name different links ({ids}); each keeps the place it was imported at, "
+             "because the tree's edges are fixed")
+
+
+def _fingerprint(camp: Campaign, batch: int, workers: int, stale: bool = False) -> dict:
     cfg = camp.config
     return fingerprint_nodes(camp.tree, make_llm(cfg), goal=cfg.get("goal", ""), batch=batch,
-                             workers=workers, progress=_progress)
+                             workers=workers, progress=_progress, stale=stale)
 
 
 def cmd_fingerprint(a) -> int:
@@ -187,7 +201,9 @@ def cmd_fingerprint(a) -> int:
         _err("drsi fingerprint: --batch and --workers must be at least 1")
         return 2
     camp = resolve_campaign(a.campaign)
-    st = _fingerprint(camp, a.batch, a.workers)
+    st = _fingerprint(camp, a.batch, a.workers, stale=a.stale)
+    if a.stale and camp.map_path.exists():
+        _write_map(camp)
     print(f"{st['done']} fingerprinted, {st['failed']} failed")
     return 0 if st["failed"] == 0 else 1
 
@@ -246,14 +262,20 @@ def cmd_sync(a) -> int:
     camp = resolve_campaign(a.campaign)
     cfg = camp.config
     added = 0
-    for src in cfg.get("sources", []):
-        added += import_jsonl(camp.tree, src["path"], preset=src["preset"], field_map=src.get("field_map"))
+    report: dict = {"refreshed": 0}
+    sources = cfg.get("sources", [])
+    for src in sources:
+        others = [o["path"] for o in sources if o["path"] != src["path"]]
+        added += import_jsonl(camp.tree, src["path"], preset=src["preset"], field_map=src.get("field_map"),
+                              report=report, shadow=others)
+    _warn_relinked(report)
     st = _fingerprint(camp, 20, 6)  # also retries anything an earlier pass left unfingerprinted
     assigned = 0
     if camp.families_path.exists():
         assigned = assign_new(camp.tree, camp.families_path, make_llm(cfg))
     _write_map(camp)
-    print(f"{added} new attempts imported, {st['done']} fingerprinted, {assigned} assigned; map rewritten")
+    print(f"{added} new attempts imported, {report['refreshed']} refreshed, {st['done']} fingerprinted, "
+          f"{assigned} assigned; map rewritten")
     return 0 if st["failed"] == 0 else 1
 
 
@@ -481,6 +503,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = with_c(sub.add_parser("fingerprint", help="fingerprint attempts that lack one"))
     s.add_argument("--batch", type=int, default=20)
     s.add_argument("--workers", type=int, default=6)
+    s.add_argument("--stale", action="store_true",
+                   help="also re-read attempts fingerprinted under an earlier goal")
     s.set_defaults(fn=cmd_fingerprint)
 
     s = with_c(sub.add_parser("families", help="build or update approach families"))

@@ -92,6 +92,8 @@ def proposal(row: dict) -> str:
     return ""
 
 
+EXT_KEYS = ("mode", "session", "supersedes", "refutes", "date", "ts", "result", "check_sha256")
+
+
 def ext(row: dict) -> dict:
-    keep = ("mode", "session", "supersedes", "refutes", "date", "ts", "result", "check_sha256")
-    return {k: row[k] for k in keep if k in row}
+    return {k: row[k] for k in EXT_KEYS if k in row}
