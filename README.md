@@ -45,11 +45,11 @@ repository. `drsi` only reads the projects it indexes, and the live loop works i
 |---|---|
 | `drsi init NAME --goal "..."` | create a campaign |
 | `drsi import -c NAME FILE [--preset attempt-ledger\|generic]` | import an attempt log (incremental) |
-| `drsi fingerprint -c NAME` | classify attempts that lack a fingerprint |
+| `drsi fingerprint -c NAME [--stale]` | classify attempts that lack a fingerprint; `--stale` also re-reads those read under an earlier goal |
 | `drsi families -c NAME [--rebuild\|--frontier\|--list]` | build/update families and untried directions |
 | `drsi map -c NAME` | print the map |
 | `drsi check -c NAME --file P` | novelty verdict for an in-session attempt; exit 0 novel, 3 variant, 4 duplicate |
-| `drsi sync -c NAME` | re-import sources, index new attempts, rewrite the map |
+| `drsi sync -c NAME` | re-import sources, index new attempts and rows corrected since import, rewrite the map |
 | `drsi config -c NAME --set a.b=JSON` | change settings |
 | `drsi baseline / run / dream / replay -c NAME` | the Dream-RSI loop |
 | `drsi gate -c NAME` | hook helper (see `hooks/novelty-gate.example.json`) |
