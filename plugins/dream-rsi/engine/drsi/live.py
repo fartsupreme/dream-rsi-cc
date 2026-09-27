@@ -286,7 +286,7 @@ class LiveRunner:
         parent = self.camp.tree.get(parent_id) if parent_id else None
         cfg = self.camp.config
         check, checks = None, []
-        start = (parent or {}).get("artifacts", {}).get("commit") or self.ws.base_commit
+        start = self.ws.start_for((parent or {}).get("artifacts", {}).get("commit"))
         try:
             if cfg["live"].get("require_check", True):
                 if self.checker is None:
@@ -330,7 +330,7 @@ class LiveRunner:
         cell, nid, parent_id, path, branch, map_text = job
         cfg = self.camp.config
         parent = self.camp.tree.get(parent_id) if parent_id else None
-        start = (parent or {}).get("artifacts", {}).get("commit") or self.ws.base_commit
+        start = self.ws.start_for((parent or {}).get("artifacts", {}).get("commit"))
         nested: list[str] = []
         if no_commit is not None:  # nothing was built: the attempt owns no code of its own
             commit, changed, links, gitlinks = no_commit, [], [], []
@@ -382,10 +382,28 @@ class LiveRunner:
             worker={"session": res.session_id, "secs": round(res.secs, 1)},
             ext={"round": self.round_id, "cell": cell, "proposal_sha": text_hash(proposal)}, **fields)
 
+    def _setup_failed(self, cell, nid, parent_id, parent_commit, error: Exception) -> dict:
+        """A cell whose workspace could not be made is recorded as an orchestration failure under its parent,
+        so the parent is no longer a leaf a policy would pick again."""
+        try:
+            with self._git_lock:
+                self.ws.remove(self.ws.path(nid))
+        except Exception:  # noqa: BLE001
+            pass
+        node = make_node(id=nid, parent=parent_id, source="live", valid=False, fail_class="orchestrator_error",
+                         ext={"round": self.round_id, "cell": cell, "proposal_sha": text_hash("")},
+                         text={"orchestrator_error": f"setting up the workspace: {type(error).__name__}: {error}"},
+                         artifacts={"commit": parent_commit, "changed": [], "checks": [],
+                                    "outcome": "inconclusive", "killed_by": "orchestrator_error"},
+                         fingerprint={"outcome": "inconclusive", "killed_by": "orchestrator_error"})
+        self.camp.tree.add(node)
+        self.log(f"{nid}: workspace setup failed ({error}); recorded, the batch goes on")
+        return node
+
     def run_batch(self, cells) -> list[dict]:
         tree = self.camp.tree
         map_text = write_map(self.camp)  # once per batch: every worker in it sees the same map
-        jobs = []
+        slots = []  # per cell, in order: its job, or the node recorded when its setup failed
         for cell in cells:
             self._seq += 1
             nid = f"{self.round_id}-{self._seq:03d}"
@@ -396,12 +414,18 @@ class LiveRunner:
                 parent_commit = tree.get(cell)["artifacts"].get("commit")
                 branch = 0
             self.proposal_dir(nid).mkdir(parents=True, exist_ok=True)
-            with self._git_lock:
-                path = self.ws.create(nid, parent_commit)
-            jobs.append((cell, nid, parent_id, path, branch, map_text))
-        pool = ThreadPoolExecutor(max_workers=len(jobs))
+            try:
+                with self._git_lock:
+                    path = self.ws.create(nid, self.ws.start_for(parent_commit))
+            except Exception as e:  # noqa: BLE001 - one cell that cannot be set up must not stop the batch
+                slots.append(self._setup_failed(cell, nid, parent_id, parent_commit, e))
+                continue
+            slots.append((cell, nid, parent_id, path, branch, map_text))
+        jobs = [s for s in slots if isinstance(s, tuple)]
+        pool = ThreadPoolExecutor(max_workers=max(1, len(jobs)))
         try:
-            nodes = list(pool.map(self._attempt, jobs))
+            done = iter(list(pool.map(self._attempt, jobs)))
+            nodes = [next(done) if isinstance(s, tuple) else s for s in slots]  # probe_batch pairs by position
         except BaseException:
             # Ctrl-C (or any abort): workers and scorers run in their own process groups, so stop them
             # explicitly instead of waiting hours for them to finish.

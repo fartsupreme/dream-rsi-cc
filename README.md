@@ -186,6 +186,11 @@ expect a campaign's first rounds to find its loopholes.
   claim before it. Claims from an interrupted earlier round are not treated as in flight.
 - **Workspaces:** build and runtime artifacts (`__pycache__/`, `*.pyc`, `target/`, …, plus
   `workspace.ignore`) are excluded in the clone and never count as edits.
+- **Moving the base:** to correct the fixed files workers read (a brief, a README, the scorer) mid-campaign,
+  commit the change in the source repository and set `workspace.base` to that commit. The next round takes it
+  up if it descends from the pinned base. New branches start on it; a continuation starts on it with its
+  parent's own edits laid on top, so it sees the corrected files and its scope is measured as before. A base
+  that does not descend from the pinned one, or a different source repository, still needs a new campaign.
 - **Defaults** follow pi-dream-rsi (juanmackie, MIT): W = 4, K1 = 6, M = 3, root slots, and the
   determinism rerun (every policy is replayed twice under different hash seeds).
 - **Seed policy π1:** the paper's parallel refinement, plus a plateau rule and a coverage rule.
