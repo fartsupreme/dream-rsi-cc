@@ -6,6 +6,11 @@ The scope of an attempt is everything that differs from the campaign base. Scori
 uses a fresh detached checkout of the committed attempt. The source repository is
 only ever cloned from, never written to.
 
+The base may move forward (`workspace.base` set to a descendant of the pinned
+commit), so the fixed files workers read can be corrected mid-campaign. A parent
+built on an earlier base is then continued from the current base with the parent's
+own edits laid on top.
+
 A worker can write anything inside its worktree, including the `.git` file that
 tells git where the repository is. Git run there would read a repository the
 worker chose, whose config can name commands git runs (core.fsmonitor,
@@ -23,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unicodedata
 from pathlib import Path
 
@@ -33,15 +39,19 @@ DEFAULT_IGNORE = ["__pycache__/", "*.pyc", "*.pyo", ".DS_Store", "target/", ".py
 GIT_TIMEOUT = 1800
 
 
-def _git(cwd, *args, check=True, env=None) -> str:
+def _git(cwd, *args, check=True, env=None, binary=False):
+    """git's output as text, or as bytes with binary=True (paths exactly as stored: text mode would turn a
+    carriage return in a file name into a newline)."""
+    text = {} if binary else {"text": True, "errors": "surrogateescape"}
     try:
         proc = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.quotepath=off",
-                               "-c", "core.fsmonitor=false", *args], cwd=cwd, capture_output=True, text=True,
-                              errors="surrogateescape", env=env, timeout=GIT_TIMEOUT)
+                               "-c", "core.fsmonitor=false", *args], cwd=cwd, capture_output=True, env=env,
+                              timeout=GIT_TIMEOUT, **text)
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"git {' '.join(args)} timed out in {cwd}") from None
+        raise RuntimeError(f"git {' '.join(map(str, args))} timed out in {cwd}") from None
     if check and proc.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed in {cwd}: {proc.stderr.strip()[-400:]}")
+        err = proc.stderr.decode("utf-8", "replace") if binary else proc.stderr
+        raise RuntimeError(f"git {' '.join(map(str, args))} failed in {cwd}: {err.strip()[-400:]}")
     return proc.stdout
 
 
@@ -84,6 +94,8 @@ class Workspaces:
         self.repo = self.root / "repo"
         self.work = self.root / "work"
         self.base_commit: str | None = None
+        self._starts: dict[str, str] = {}
+        self._starts_lock = threading.Lock()
 
     def ensure_clone(self) -> None:
         pin = self.root / "base_commit.json"
@@ -101,8 +113,7 @@ class Workspaces:
         if pin.exists():
             recorded = json.loads(pin.read_text())
             if (recorded["source"], recorded["base"]) != (str(self.source), self.base):
-                raise RuntimeError(f"the campaign clone was made from {recorded['source']} at {recorded['base']}; "
-                                   f"the config now says {self.source} at {self.base}. Start a new campaign.")
+                recorded = self._move_base(pin, recorded)
             self.base_commit = recorded["commit"]
         else:
             self.base_commit = _git(self.repo, "rev-parse", "HEAD").strip()
@@ -115,10 +126,72 @@ class Workspaces:
         if missing:
             exclude.write_text("\n".join(existing + missing) + "\n")
 
+    def _move_base(self, pin: Path, recorded: dict) -> dict:
+        """The config names a new base. A descendant of the pinned commit in the same source is taken up;
+        anything else would change what earlier attempts were measured against, so it needs a new campaign."""
+        refuse = RuntimeError(f"the campaign clone was made from {recorded['source']} at {recorded['base']}; "
+                              f"the config now says {self.source} at {self.base}. Start a new campaign.")
+        if recorded["source"] != str(self.source) or not self.base:
+            raise refuse
+        try:
+            commit = _git(self.source, "rev-parse", "--verify", "--quiet", f"{self.base}^{{commit}}").strip()
+        except RuntimeError:
+            raise refuse from None
+        self._in_repo("fetch", "--quiet", "--no-tags", str(self.source),
+                      "+refs/heads/*:refs/drsi-source/heads/*", "+refs/tags/*:refs/drsi-source/tags/*")
+        if not self._in_repo("cat-file", "-t", commit, check=False).strip() == "commit":
+            raise RuntimeError(f"the new base {self.base} is on no branch or tag of {self.source}")
+        if self._in_repo("merge-base", recorded["commit"], commit, check=False).strip() != recorded["commit"]:
+            raise refuse
+        history = list(recorded.get("history", []))
+        if commit != recorded["commit"]:  # another name for the pinned commit is not a move
+            history.append({"base": recorded["base"], "commit": recorded["commit"]})
+        moved = {"source": str(self.source), "base": self.base, "commit": commit, "history": history}
+        tmp = pin.with_name(pin.name + ".new")
+        tmp.write_text(json.dumps(moved))
+        os.replace(tmp, pin)
+        return moved
+
+    def start_for(self, parent_commit: str | None) -> str:
+        """The commit an attempt starts from: the base for a new branch; its parent's commit when that already
+        stands on the current base; otherwise (the base moved after the parent was built) the current base
+        with the parent's own edits laid on top, so the attempt sees the new fixed files and keeps its
+        parent's work, and its scope is measured as before."""
+        if not parent_commit:
+            return self.base_commit
+        with self._starts_lock:
+            if parent_commit not in self._starts:
+                old = self._in_repo("merge-base", parent_commit, self.base_commit, check=False).strip()
+                self._starts[parent_commit] = (parent_commit if old in ("", self.base_commit)
+                                               else self._onto_base(parent_commit, old))
+            return self._starts[parent_commit]
+
+    def _onto_base(self, parent_commit: str, old_base: str) -> str:
+        """The new base's tree with the parent's own changes (its diff from the base it was built on) laid on
+        top, as a rebase would: a file the parent never changed follows the new base, deletions included. A
+        changed shape (a directory the parent made a file, or the base did) goes the parent's way, and the
+        result is judged by the scope check like any attempt, never refused here."""
+        out = self._in_repo("diff", "--no-renames", "--no-abbrev", "--raw", "-z", old_base, parent_commit,
+                            binary=True)
+        parts = out.split(b"\0")
+        changes = [(parts[i].lstrip(b":").split(), parts[i + 1]) for i in range(0, len(parts) - 1, 2)]
+        with tempfile.TemporaryDirectory(prefix="drsi-index-") as d:
+            index = Path(d) / "index"
+            self._in_repo("read-tree", self.base_commit, index=index)
+            for fields, path in sorted(changes, key=lambda c: not c[0][4].startswith(b"D")):  # removals first
+                if fields[4].startswith(b"D"):
+                    self._in_repo("update-index", "--force-remove", "--", path, index=index)
+                else:
+                    self._in_repo("update-index", "--add", "--replace", "--cacheinfo",
+                                  fields[1] + b"," + fields[3] + b"," + path, index=index)
+            tree = self._in_repo("write-tree", index=index).strip()
+        return self._in_repo("commit-tree", tree, "-p", parent_commit, "-p", self.base_commit,
+                             "-m", f"dream-rsi: {parent_commit[:12]} on the moved base").strip()
+
     def path(self, node_id: str) -> Path:
         return self.work / node_id
 
-    def _in_repo(self, *args, check=True, work_tree=None, index=None) -> str:
+    def _in_repo(self, *args, check=True, work_tree=None, index=None, binary=False):
         """git on the clone's own metadata, run from the clone; never from a worktree. Only the clone's own
         config applies: filter drivers in the user's global or system config could otherwise be named by
         an attempt's .gitattributes and run on its files."""
@@ -130,7 +203,7 @@ class Workspaces:
             env["GIT_INDEX_FILE"] = str(index)
         self._scrub_admin()
         flags = ["--git-dir", str(self.repo / ".git")] + (["--work-tree", str(work_tree)] if work_tree else [])
-        return _git(self.repo, *flags, *args, check=check, env=env)
+        return _git(self.repo, *flags, *args, check=check, env=env, binary=binary)
 
     def _scrub_admin(self) -> None:
         """Git opens every registered worktree's admin files (HEAD, gitdir, ...) when it lists worktrees.
