@@ -185,6 +185,7 @@ def family_stats(tree: Tree, families: dict, plateau: int = 3) -> list[dict]:
             "first": ms[0]["id"] if ms else None, "last": ms[-1]["id"] if ms else None,
             "last_created": ms[-1].get("created") if ms else None,
             "outcomes": dict(outcomes), "killed_by_top": killers.most_common(1)[0][0] if killers else "",
+            "killed_by_next": killers.most_common(2)[1][0] if len(killers) > 1 else "",
             "recent": [m["id"] for m in ms[-5:]],
         })
     return out
