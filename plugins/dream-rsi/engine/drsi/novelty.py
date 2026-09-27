@@ -43,9 +43,11 @@ JUDGE_RULES = """Decide whether the PROPOSAL repeats history. The prior attempts
 Judge only against the record: whether you expect the idea to work does not change the verdict.
 Also give: family (the best-matching family id, F00 if none), nearest_ids (the closest prior attempt ids),
 what_differs (the concrete technical difference from the nearest attempt; "" if none), targets_gate (the
-gate or argument that stopped the nearest attempts), addresses_stopper (true if the stated difference is
-aimed at that gate or argument, whether or not you expect it to succeed), doubts (your prediction of why it
-may still fail, "" if none), rationale (<= 60 words).
+gate or argument, among those that stopped the nearest attempts or their family -- the most common one or another,
+since a family can be stopped by several -- that the stated difference is aimed at; the most common one if it is
+aimed at none), addresses_stopper (true if the stated difference is aimed at any such gate or argument that the
+campaign goal still requires, whether or not you expect it to succeed), doubts (your prediction of why it may
+still fail, "" if none), rationale (<= 60 words).
 """
 
 
@@ -140,9 +142,10 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
                 shown.add(mid)
 
     table = "\n".join(f"{s['id']} | {s['name']} | n={s['n']} | {s['status']} | stopped by: {s['killed_by_top'] or '-'}"
+                      + (f"; also {s['killed_by_next']}" if s.get("killed_by_next") else "")
                       for s in stats.values())
     prompt = (f"Campaign goal: {goal or '(not stated)'}\n\n{JUDGE_RULES}\n"
-              f"FAMILIES (id | name | attempts | status | most common stopper)\n{table or '(none yet)'}\n\n"
+              f"FAMILIES (id | name | attempts | status | most common stoppers)\n{table or '(none yet)'}\n\n"
               "NEAREST PRIOR ATTEMPTS\n" + ("\n".join(_line(_brief(h)) for h in hits) or "(none)") + "\n\n"
               "RECENT ATTEMPTS IN THOSE FAMILIES\n" + ("\n".join(_line(_brief(m)) for m in family_members) or "(none)") +
               "\n\nIN-FLIGHT PROPOSALS (claimed by parallel workers, not recorded yet; cite as pending:<ticket>)\n" +
