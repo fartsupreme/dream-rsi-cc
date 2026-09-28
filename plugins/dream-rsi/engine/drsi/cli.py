@@ -229,15 +229,18 @@ def cmd_families(a) -> int:
     llm = make_llm(cfg)
     tree = camp.tree
     goal = cfg.get("goal", "")
+    objective = (cfg.get("live") or {}).get("objective")
     if a.rebuild or not camp.families_path.exists():
-        fams = rebuild_families(tree, llm, goal, camp.families_path, plateau=cfg["search"]["plateau"])
+        fams = rebuild_families(tree, llm, goal, camp.families_path, plateau=cfg["search"]["plateau"],
+                                objective=objective)
         assigned = sum(1 for n in camp.tree.nodes() if (n.get("fingerprint") or {}).get("family"))
         print(f"{len(fams['families']) - 1} families built; {assigned} attempts assigned")
     else:
         n = assign_new(tree, camp.families_path, llm)
         print(f"{n} new attempts assigned to existing families")
         if a.frontier:
-            refresh_frontier(tree, llm, goal, camp.families_path, plateau=cfg["search"]["plateau"])
+            refresh_frontier(tree, llm, goal, camp.families_path, plateau=cfg["search"]["plateau"],
+                             objective=objective)
             print("frontier rebuilt")
     _write_map(camp)
     return 0

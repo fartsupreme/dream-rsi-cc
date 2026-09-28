@@ -159,6 +159,10 @@ class LiveRunner:
                                    or not all(isinstance(m, str) and m.strip() for m in models)):
             raise ValueError(f"llm.worker_models must be a non-empty list of model names, not {models!r}")
         self.worker_models = models  # slot i of a batch runs models[i % len(models)]; None: every worker on worker_model
+        objective = cfg["live"].get("objective")
+        if objective is not None and (not isinstance(objective, str) or not objective.strip()):
+            raise ValueError(f"live.objective must be text saying what the workspace scores, not {objective!r}")
+        self.objective = objective  # what the scorer measures, when it is narrower than the goal
         self.default_model = cfg["llm"].get("worker_model") or cfg["llm"]["model"]
         self._models: dict[str, str | None] = {}
         self.ids: list[str] = []
@@ -200,8 +204,13 @@ class LiveRunner:
     def _context(self, parent: dict | None, branch: int, workspace: Path) -> list[str]:
         cfg = self.camp.config
         parts = ["You are one worker in a Dream-RSI research campaign. You make exactly one attempt.", "",
-                 "GOAL", cfg.get("goal") or "(not stated)", "",
-                 "WORKSPACE",
+                 "GOAL", cfg.get("goal") or "(not stated)", ""]
+        if self.objective:
+            parts += ["WHAT THIS WORKSPACE SCORES", self.objective,
+                      "The scorer records an attempt that does not serve this as invalid, however good its idea. The "
+                      "goal above is what it serves: take a direction toward the goal only in a form the scorer "
+                      "measures.", ""]
+        parts += ["WORKSPACE",
                  f"{workspace} is a git worktree made for this attempt only. Edit only files matching "
                  f"{cfg['workspace']['mutable']}. Do not commit; the orchestrator commits when you finish. "
                  f"After you finish, the campaign scorer (`{cfg['scorer']['cmd']}`) runs on a clean checkout of "
@@ -227,8 +236,8 @@ class LiveRunner:
                       "a dead or plateaued family on the map."]
             fams = load_families(self.camp.families_path) if self.camp.families_path.exists() else {}
             frontier = fams.get("frontier") or []
-            if frontier:
-                d = frontier[branch % len(frontier)]
+            if branch < len(frontier):  # each suggestion to one branch of a round; the rest choose from the map
+                d = frontier[branch]
                 parts.append(f"Suggested untried direction for this branch (unverified; use it or beat it): "
                              f"{d['direction']}")
             parts.append("")

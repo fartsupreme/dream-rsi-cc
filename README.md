@@ -207,6 +207,10 @@ expect a campaign's first rounds to find its loopholes.
 - **Worker models:** workers run on `llm.worker_model` (default `opus`). To draw ideas from more than one model at once,
   set `llm.worker_models` to a list: slot i of each batch runs `worker_models[i % len]`, so `["opus", "fable"]` with
   `search.W = 6` runs three of each. One model proposes and builds an attempt, and every attempt records its model.
+- **Workspace objective:** when the workspace can build and score only part of the goal, say which part in
+  `live.objective`. Every worker's brief carries it after the goal, and `drsi families` asks the frontier for
+  directions a worker can build there. Each suggested direction goes to one new branch of a round; branches past
+  the frontier's length choose from the map.
 - **Moving the base:** to correct the fixed files workers read (a brief, a README, the scorer) mid-campaign,
   commit the change in the source repository and set `workspace.base` to that commit. The next round takes it
   up if it descends from the pinned base. New branches start on it; a continuation starts on it with its
