@@ -186,6 +186,9 @@ expect a campaign's first rounds to find its loopholes.
   claim before it. Claims from an interrupted earlier round are not treated as in flight.
 - **Workspaces:** build and runtime artifacts (`__pycache__/`, `*.pyc`, `target/`, …, plus
   `workspace.ignore`) are excluded in the clone and never count as edits.
+- **Worker models:** workers run on `llm.worker_model` (default `opus`). To draw ideas from more than one model at once,
+  set `llm.worker_models` to a list: slot i of each batch runs `worker_models[i % len]`, so `["opus", "fable"]` with
+  `search.W = 6` runs three of each. One model proposes and builds an attempt, and every attempt records its model.
 - **Moving the base:** to correct the fixed files workers read (a brief, a README, the scorer) mid-campaign,
   commit the change in the source repository and set `workspace.base` to that commit. The next round takes it
   up if it descends from the pinned base. New branches start on it; a continuation starts on it with its

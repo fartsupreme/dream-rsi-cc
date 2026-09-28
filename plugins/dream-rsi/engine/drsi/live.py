@@ -154,6 +154,13 @@ class LiveRunner:
         self.ws = workspaces or Workspaces(camp.root, cfg["workspace"]["repo"], cfg["workspace"].get("base"),
                                            ignore=cfg["workspace"].get("ignore"))
         self.ws.ensure_clone()
+        models = cfg["llm"].get("worker_models")
+        if models is not None and (not isinstance(models, list) or not models
+                                   or not all(isinstance(m, str) and m.strip() for m in models)):
+            raise ValueError(f"llm.worker_models must be a non-empty list of model names, not {models!r}")
+        self.worker_models = models  # slot i of a batch runs models[i % len(models)]; None: every worker on worker_model
+        self.default_model = cfg["llm"].get("worker_model") or cfg["llm"]["model"]
+        self._models: dict[str, str | None] = {}
         self.ids: list[str] = []
         self._seq = 0
         self._git_lock = threading.Lock()
@@ -266,8 +273,11 @@ class LiveRunner:
         return "\n".join(parts)
 
     # -- one attempt -----------------------------------------------------------------------
-    def _call(self, path, system) -> AgentResult:
+    def _call(self, path, system, nid: str | None = None) -> AgentResult:
+        model = self._models.get(nid)
         try:
+            if model:
+                return self.worker_fn(path, WORKER_PROMPT, system, model=model)
             return self.worker_fn(path, WORKER_PROMPT, system)
         except Exception as e:  # noqa: BLE001 - a crashed worker is a recorded attempt, not a lost round
             return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
@@ -294,7 +304,7 @@ class LiveRunner:
                 feedback = None
                 for _ in range(max(1, int(cfg["live"].get("max_proposals", 3)))):
                     _clear(self.proposal_file(nid))  # a stale proposal must never be judged again
-                    res = self._call(path, self.brief_propose(nid, parent, branch, path, map_text, feedback))
+                    res = self._call(path, self.brief_propose(nid, parent, branch, path, map_text, feedback), nid)
                     with self._git_lock:
                         self.ws.recreate(nid, start)  # proposing builds nothing: nothing it did survives
                     proposal = self._read_proposal(nid, res) if res.ok else ""
@@ -308,7 +318,7 @@ class LiveRunner:
                     feedback = render_check(check)
                 if check["verdict"] == "duplicate":
                     return self._finish(job, AgentResult(ok=True), check, checks, not_novel=True, no_commit=start)
-            res = self._call(path, self.brief_implement(nid, parent, branch, path, check, map_text))
+            res = self._call(path, self.brief_implement(nid, parent, branch, path, check, map_text), nid)
             return self._finish(job, res, check, checks)
         except Exception as e:  # noqa: BLE001 - an orchestration failure says nothing about the idea
             try:
@@ -379,7 +389,8 @@ class LiveRunner:
                        "outcome": outcome, "killed_by": killed_by,
                        "scorer_summary": str(sc.get("summary") or sc.get("error") or "")[:800],
                        "self_reported_score": report.get("self_reported_score")},
-            worker={"session": res.session_id, "secs": round(res.secs, 1)},
+            worker={"session": res.session_id, "secs": round(res.secs, 1),
+                    "model": self._models.get(nid) or self.default_model},
             ext={"round": self.round_id, "cell": cell, "proposal_sha": text_hash(proposal)}, **fields)
 
     def _setup_failed(self, cell, nid, parent_id, parent_commit, error: Exception) -> dict:
@@ -404,9 +415,11 @@ class LiveRunner:
         tree = self.camp.tree
         map_text = write_map(self.camp)  # once per batch: every worker in it sees the same map
         slots = []  # per cell, in order: its job, or the node recorded when its setup failed
-        for cell in cells:
+        for slot, cell in enumerate(cells):
             self._seq += 1
             nid = f"{self.round_id}-{self._seq:03d}"
+            if self.worker_models:
+                self._models[nid] = self.worker_models[slot % len(self.worker_models)]
             if cell.startswith(ROOT):
                 parent_id, parent_commit, branch = None, None, int(cell[len(ROOT):])
             else:
