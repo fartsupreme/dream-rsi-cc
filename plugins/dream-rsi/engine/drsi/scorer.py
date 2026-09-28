@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .agent import Descendants, register_child, unregister_child
+from .agent import Descendants, refuse_if_stopping, register_child, unregister_child
 
 
 def _fail(fail_class: str, error: str, stdout: str = "") -> dict:
@@ -72,6 +72,7 @@ def run_scorer(cmd: str, workspace, timeout: int, direction: str = "max", env: d
 
 
 def _run(argv, workspace, full_env, timeout, direction, sweep: list[Path]) -> dict:
+    refuse_if_stopping()
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(argv, cwd=workspace, stdin=subprocess.DEVNULL, stdout=out,
                                 stderr=err, env=full_env, start_new_session=True)

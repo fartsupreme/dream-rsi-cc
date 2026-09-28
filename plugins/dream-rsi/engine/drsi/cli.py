@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
+import time
 from pathlib import Path
 
 from .families import (assign_families, assign_new, build_frontier, build_taxonomy, family_stats,
@@ -378,6 +380,68 @@ def cmd_baseline(a) -> int:
     return 0
 
 
+def cmd_stop(a) -> int:
+    """End a campaign's run through its own cleanup (SIGTERM), then SIGKILL after the grace period; once the run
+    lock is free, the run's guardian (or, with no guardian left, this command) kills whatever the run left."""
+    from . import guardian
+    camp = resolve_campaign(a.campaign)
+    path = camp.root / "logs" / guardian.REGISTRY
+    try:
+        data = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        print("no run is recorded for this campaign; nothing to stop")
+        return 0
+    run, started = guardian.identity(data)
+
+    def wait_free(secs: float) -> bool:
+        end = time.time() + secs
+        while guardian.run_lock_held(path):
+            if time.time() >= end:
+                return False
+            time.sleep(0.2)
+        return True
+    if guardian.run_lock_held(path):
+        if guardian.alive(run, started) is not True:
+            print(f"the campaign's run lock is held, but process {run} cannot be confirmed as its run; "
+                  "nothing was signalled")
+            return 1
+        try:
+            os.kill(int(run), signal.SIGTERM)  # the run's own cleanup first
+        except ProcessLookupError:
+            pass
+        if not wait_free(a.grace) and guardian.alive(run, started) is True:
+            try:
+                os.kill(int(run), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not wait_free(30):
+            print(f"run {run} still holds the campaign's run lock; stop it by hand")
+            return 1
+    # the run is gone: its own cleanup or its guardian clears the registry; with neither, this command does
+    watched = data.get("guardian") is not None and \
+        guardian.alive(data.get("guardian"), data.get("guardian_start")) is not False  # gone only if known gone
+    end = time.time() + (60 if watched else 0)
+    while path.exists() and time.time() < end:
+        time.sleep(0.5)
+    rep = {"groups": 0, "processes": 0, "in_work": 0}
+    if path.exists():
+        with guardian.holding_run_lock(path, timeout=60) as held:
+            if not held:
+                print("another process holds the campaign's run lock; nothing was reaped")
+                return 1
+            rep = guardian.reap(path)
+        if rep.get("alive") or rep.get("unknown") or rep.get("unreadable"):
+            why = {"alive": f"process {run} is alive but does not hold the campaign's run lock",
+                   "unknown": "the process table could not be read",
+                   "unreadable": "the registry could not be read"}[next(k for k in ("alive", "unknown", "unreadable")
+                                                                        if rep.get(k))]
+            print(f"nothing was stopped: {why}")
+            return 1
+    print(f"stopped run {run}: {rep['groups']} process groups, {rep['processes']} processes and "
+          f"{rep['in_work']} processes left in its workspaces killed here")
+    return 0
+
+
 def cmd_rescore(a) -> int:
     from .rescore import rescore
     camp = resolve_campaign(a.campaign)
@@ -450,9 +514,43 @@ def cmd_run(a) -> int:
     if problem:
         _err(f"drsi run: {problem}")
         return 2
-    rep = run_cycles(camp, a.rounds, worker_fn=make_worker(camp), developer=make_developer(camp),
-                     indexer=make_indexer(camp), checker=make_checker(camp),
-                     history_world=_history_world(camp) if a.history else None, progress=print)
+    from . import guardian
+    from .agent import allow_children, attach_registry, stop_children
+    (camp.root / "logs").mkdir(parents=True, exist_ok=True)
+    reg_path = camp.root / "logs" / guardian.REGISTRY
+    if reg_path.exists():  # a run that died with its guardian: finish its cleanup first (this run holds the lock)
+        left = guardian.reap(reg_path)
+        if left.get("alive") or left.get("unknown") or left.get("unreadable"):
+            _err(f"drsi run: the previous run's registry ({reg_path}) could not be reaped "
+                 f"({', '.join(k for k in ('alive', 'unknown', 'unreadable') if left.get(k))}); not starting over it")
+            return 2
+    registry = guardian.Registry(reg_path, camp.root / "work")
+    registry.open()
+    guard = guardian.spawn_guardian(reg_path)
+    registry.set_guardian(guard.pid)
+
+    def on_term(signum, frame):  # `drsi stop` and a closed terminal end the run through its own cleanup
+        raise KeyboardInterrupt(f"signal {signum}")
+    previous = {sig: signal.signal(sig, on_term) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    allow_children()
+    attach_registry(registry)
+    clean = False
+    try:
+        rep = run_cycles(camp, a.rounds, worker_fn=make_worker(camp), developer=make_developer(camp),
+                         indexer=make_indexer(camp), checker=make_checker(camp),
+                         history_world=_history_world(camp) if a.history else None, progress=print)
+        clean = True
+    finally:
+        stop_children()  # no child starts from here on, and every recorded group is killed
+        swept = guardian.sweep_tree(os.getpid(), camp.root / "work", spare={guard.pid})  # what its workers detached
+        attach_registry(None)
+        if clean and swept is not None:
+            registry.close()  # the guardian exits with it
+            allow_children()
+        # otherwise the registry stays: once this process has exited and nothing more can start, the guardian reaps
+        # with the tree it recorded
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
     for r in rep["rounds"]:
         print(f"{r['round_id']}: {r['attempts']} attempts ({r['valid']} valid) best {r['best_score']} "
               f"baseline {r['baseline']}; dream {'deployed ' + r['dream']['version'] if r['dream']['deployed'] else 'kept the incumbent'}")
@@ -567,6 +665,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-age-hours", type=float, default=6.0)
     s.set_defaults(fn=cmd_gate)
 
+    s = with_c(sub.add_parser("stop", help="stop a running `drsi run` and everything it started"))
+    s.add_argument("--grace", type=float, default=30.0, help="seconds the run gets to clean up after itself")
+    s.set_defaults(fn=cmd_stop)
     s = with_c(sub.add_parser("rescore", help="score recorded live attempts again with the current scorer"))
     s.add_argument("--ids", help="comma-separated attempt ids")
     s.add_argument("--all", action="store_true", help="every live attempt that reached the scorer")

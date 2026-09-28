@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
-from .agent import AgentResult, kill_all_children, register_child, unregister_child
+from .agent import AgentResult, kill_all_children, refuse_if_stopping, register_child, unregister_child
 from .dream import SEED_POLICY, run_dream
 from .families import load_families
 from .guard import check_policy_source, safe_builtins
@@ -489,6 +489,7 @@ class _Lines:
 
 def _drive(policy: PolicySource, q: LiveQuestion, budget: int, think: float | None, log) -> str:
     """Run the policy in a child process against the orchestrator's question. Returns why it stopped."""
+    refuse_if_stopping()
     req_r, req_w = os.pipe()
     resp_r, resp_w = os.pipe()
     with tempfile.TemporaryDirectory(prefix="drsi-policy-") as d:
