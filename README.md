@@ -186,6 +186,10 @@ expect a campaign's first rounds to find its loopholes.
   claim before it. Claims from an interrupted earlier round are not treated as in flight.
 - **Workspaces:** build and runtime artifacts (`__pycache__/`, `*.pyc`, `target/`, …, plus
   `workspace.ignore`) are excluded in the clone and never count as edits.
+- **Rescoring:** when the scorer is corrected mid-campaign, `drsi rescore -c NAME --all` (or `--ids a,b`) runs the
+  current scorer on each live attempt's own commit, as the loop scores it, keeps the old reading on the node
+  (`artifacts.rescored`), judges every live outcome again against its parent's score, and updates the frozen round
+  worlds and the map. Attempts that never reached the scorer (not novel, out of scope, a failed worker) are left alone.
 - **Worker models:** workers run on `llm.worker_model` (default `opus`). To draw ideas from more than one model at once,
   set `llm.worker_models` to a list: slot i of each batch runs `worker_models[i % len]`, so `["opus", "fable"]` with
   `search.W = 6` runs three of each. One model proposes and builds an attempt, and every attempt records its model.

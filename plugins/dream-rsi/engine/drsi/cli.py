@@ -378,6 +378,20 @@ def cmd_baseline(a) -> int:
     return 0
 
 
+def cmd_rescore(a) -> int:
+    from .rescore import rescore
+    camp = resolve_campaign(a.campaign)
+    if not a.all and not a.ids:
+        _err("drsi rescore: name the attempts (--ids a,b,...) or pass --all for every live attempt")
+        return 2
+    ids = None if a.all else {i.strip() for i in a.ids.split(",") if i.strip()}
+    rep = rescore(camp, ids=ids, parallel=a.parallel, log=print)
+    for nid in rep["skipped"]:
+        print(f"{nid}: skipped (it never reached the scorer)")
+    print(f"rescored {len(rep['rescored'])}, skipped {len(rep['skipped'])}; outcomes, worlds and the map follow")
+    return 0
+
+
 def cmd_replay(a) -> int:
     camp = resolve_campaign(a.campaign)
     worlds = _worlds(camp, a.history)
@@ -553,6 +567,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-age-hours", type=float, default=6.0)
     s.set_defaults(fn=cmd_gate)
 
+    s = with_c(sub.add_parser("rescore", help="score recorded live attempts again with the current scorer"))
+    s.add_argument("--ids", help="comma-separated attempt ids")
+    s.add_argument("--all", action="store_true", help="every live attempt that reached the scorer")
+    s.add_argument("--parallel", type=int, default=4, help="scorings at once when scorer.serial is off")
+    s.set_defaults(fn=cmd_rescore)
     s = with_c(sub.add_parser("replay", help="score a policy by replay (default: the deployed one)"))
     s.add_argument("--policy")
     s.add_argument("--history", action="store_true")
