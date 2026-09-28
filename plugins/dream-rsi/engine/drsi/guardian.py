@@ -347,11 +347,11 @@ def reap(path, ident: tuple | None = None, seen: dict | None = None) -> dict:
     # the recorded groups' leaders and every process seen in the run's tree are the roots: each is stopped with
     # everything descended from it before anything is killed, so no parentage is lost to a kill
     processes = freeze_and_kill(leaders | known, spare=spare)
+    if processes is None:  # nothing is killed: the stopped processes keep their children for the next look
+        return {"groups": 0, "processes": 0, "in_work": 0, "unknown": True}
     for pid in leaders:  # and anything left in their groups
         _kill(pid, group=True)
     groups = len(leaders)
-    if processes is None:
-        return {"groups": groups, "processes": 0, "in_work": 0, "unknown": True}
     in_work = sweep_workspaces(Path(data.get("work") or ""), spare=spare)
     if in_work is None:  # the workspaces could not be looked into: the registry stays for the next attempt
         return {"groups": groups, "processes": processes, "in_work": 0, "unknown": True}

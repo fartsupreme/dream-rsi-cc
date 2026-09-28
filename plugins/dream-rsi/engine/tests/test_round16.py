@@ -6,6 +6,8 @@
 3. SIGSTOP is delivered asynchronously: a look taken before it lands proved nothing, and a fork in flight was missed.
 4. An `lsof` that failed after printing part of the table, or a `ps` that left out a process still there, counted as a
    complete look.
+5. (fifth review) A reap whose freeze could not finish still killed the recorded groups, cutting the parentage the
+   next look needed and leaving a detached command stopped for good.
 """
 import os
 import signal
@@ -92,6 +94,19 @@ class FourthReviewTest(Base):
             return real(args, **kw)
         with mock.patch.object(agent.subprocess, "run", side_effect=fake):
             self.assertIsNone(agent._headless({a.pid, b.pid}))
+
+    def test_a_reap_whose_freeze_did_not_finish_kills_nothing(self):
+        reg = self.dead_run(guardian.Registry(self.path, self.work))
+        worker, detached = self.detaching_worker(register=False)
+        reg.add(worker.pid)
+        with mock.patch.object(guardian, "freeze_and_kill", return_value=None):
+            rep = guardian.reap(reg.path)
+        self.assertTrue(rep.get("unknown"))
+        self.assertTrue(alive(worker.pid), "a reap that could not freeze killed the group anyway")
+        self.assertTrue(self.path.exists())
+        rep = guardian.reap(reg.path)  # the next look finds the worker, and through it the detached command
+        self.assertTrue(gone_within(worker.pid, 5))
+        self.assertTrue(gone_within(detached, 5))
 
 
 if __name__ == "__main__":
