@@ -146,7 +146,7 @@ expect a campaign's first rounds to find its loopholes.
     mid-swap, the next families operation finishes or discards the swap, as the tree shows.
   - Only one `drsi run` or `drsi baseline` runs per campaign at a time.
   - Each attempt is recorded the moment it finishes, so an interrupted batch keeps its finished work.
-  - Ctrl-C kills the workers' and scorers' process groups.
+  - Ctrl-C or `drsi stop` ends everything the run started (see **Stopping a run** below).
   - A judge or classifier outage is recorded as `orchestrator_error`, never as a failed idea.
 
 ## Limits
@@ -186,6 +186,20 @@ expect a campaign's first rounds to find its loopholes.
   claim before it. Claims from an interrupted earlier round are not treated as in flight.
 - **Workspaces:** build and runtime artifacts (`__pycache__/`, `*.pyc`, `target/`, …, plus
   `workspace.ignore`) are excluded in the clone and never count as edits.
+- **Stopping a run:** `drsi stop -c NAME` ends a running `drsi run` and everything it started: it asks the run to end
+  through its own cleanup, and sends SIGKILL after `--grace` seconds. A run holds `logs/run.lock` for its whole life,
+  records every process group it starts (workers, scorers, the policy, the developer) in `logs/run-children.json`
+  with its own pid and start time, and starts a guardian in a session of its own. The guardian notes every process in
+  the run's tree as it goes and keeps that list on disk, since a worker's shell commands run in sessions of their own
+  and can leave the workspaces. If the lock comes free while that record still exists (Ctrl-C, a crash, a kill), the
+  guardian stops the recorded groups and every process on its list that is still the same process (pid and start
+  time), with everything descended from them, then kills them all, then every headless process of yours still
+  working in the run's workspaces, and exits. A terminal or an editor you opened in a workspace is never touched. A
+  run that ends by itself sweeps its own tree the same way and closes the record; an interrupted one sweeps, starts no
+  new process, and leaves the record for the guardian. `ps` only identifies processes: a process table or a
+  workspace that cannot be read counts as "unknown", never "dead" or "empty", and the record stays for the next
+  attempt. A new `drsi run` also finishes a dead run's cleanup first, and will not start over a record it could not
+  finish.
 - **Rescoring:** when the scorer is corrected mid-campaign, `drsi rescore -c NAME --all` (or `--ids a,b`) runs the
   current scorer on each live attempt's own commit, as the loop scores it, keeps the old reading on the node
   (`artifacts.rescored`), judges every live outcome again against its parent's score, and updates the frozen round
