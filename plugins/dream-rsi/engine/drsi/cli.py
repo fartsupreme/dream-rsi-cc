@@ -42,7 +42,7 @@ def make_llm(cfg: dict, role: str = "classifier"):
     return ClaudeCLI(model=model, system_prompt=CLASSIFIER_SYSTEM)
 
 
-def worker_agent(camp: Campaign, workspace, system: str) -> ClaudeAgent:
+def worker_agent(camp: Campaign, workspace, system: str, model: str | None = None) -> ClaudeAgent:
     """A headless worker confined by Claude Code's Bash sandbox: it can write only its own worktree and
     proposal directory, has no network unless live.allowed_domains names hosts, runs no hooks, and loads
     no user or project settings. Workers never run drsi: the orchestrator checks their proposals."""
@@ -60,7 +60,7 @@ def worker_agent(camp: Campaign, workspace, system: str) -> ClaudeAgent:
             "network": {"allowedDomains": list(live.get("allowed_domains") or [])},
         },
     }
-    return ClaudeAgent(model=cfg["llm"].get("worker_model") or cfg["llm"]["model"], tools=WORKER_TOOLS,
+    return ClaudeAgent(model=model or cfg["llm"].get("worker_model") or cfg["llm"]["model"], tools=WORKER_TOOLS,
                        permission_mode=live["permission_mode"], allowed_tools=list(live.get("allowed_bash") or []),
                        append_system_prompt=system, json_schema=WORKER_REPORT_SCHEMA, timeout=live["timeout_s"],
                        env=cfg["workspace"].get("env") or None, settings=settings, setting_sources="local")
@@ -70,8 +70,8 @@ def make_worker(camp: Campaign):
     if WORKER_FACTORY is not None:
         return WORKER_FACTORY(camp)
 
-    def worker(workspace, prompt, system):
-        agent = worker_agent(camp, workspace, system)
+    def worker(workspace, prompt, system, model=None):
+        agent = worker_agent(camp, workspace, system, model)
         return agent.run(workspace, prompt, add_dirs=[camp.root / "work" / "_proposals" / Path(workspace).name])
     return worker
 
