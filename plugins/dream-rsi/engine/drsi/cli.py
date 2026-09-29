@@ -347,7 +347,7 @@ def cmd_config(a) -> int:
 
 def _history_world(camp: Campaign) -> dict:
     ids = {n["id"] for n in camp.tree.nodes() if n.get("source") == "import"}
-    return world_from_tree(camp.tree, "history", ids=ids)
+    return world_from_tree(camp.tree, "history", ids=ids) | {"live": False}  # never a live round: not compared on
 
 
 def _worlds(camp: Campaign, history: bool) -> list[dict]:

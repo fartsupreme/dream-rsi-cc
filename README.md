@@ -154,7 +154,8 @@ expect a campaign's first rounds to find its loopholes.
     own process can change its score.
   - The question enforces the probe budget exactly and forbids re-entrant probes and `reset()` after probing.
   - Replay, the behaviour gate and a live round hand the policy the same view: attempts are shown under ids that
-    say only when they were revealed (`a1`, `a2`, ...), the question prints as `<question>`, the policy is built
+    say only when they were revealed (`a1`, `a2`, ...), no family is shown (live, it depends on when the classifier
+    reached an attempt), the question prints as `<question>`, the policy is built
     with no argument at its default beta, as a live round builds it, and every policy process runs at one hash seed
     (a policy can read the seed through set order; the second replay run uses another seed, and a policy whose
     traces differ between the two runs is refused).
@@ -246,7 +247,10 @@ expect a campaign's first rounds to find its loopholes.
   (or `"batch"`, `"clock"`), but the guarantee above holds only for the defaults: those options can reward
   behaviour a live round never shows, and the dream warns when one is set. `drsi replay` ranks with the dream
   step's formula over every world and says in how many the deployed policy stays on the record (the dream compares
-  on those alone).
+  on those alone). The history world (`--history`, imported rows, some scored by the classifier's outcome) was
+  never a live round, so the dream does not compare on it. The bound errs one way: a revision that goes past the
+  record is valued as if every probe it had left were an empty batch, so the dream can pass over a revision that
+  would do better live by exploring where nothing was recorded, and never deploys one that does worse.
 - **Parallel attempts:** the orchestrator's checks within a round are two-phase claims. Each claim is
   recorded under a lock and then judged without the lock, so checks run concurrently, but each one sees every
   claim before it. Claims from an interrupted earlier round are not treated as in flight.
