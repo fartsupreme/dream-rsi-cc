@@ -51,8 +51,13 @@ def prune(camp: Campaign, ids: set[str] | None = None, error_match: str | None =
     pool = camp.root / "trace_pool"
     frozen = {p.parent.name for p in pool.glob("*/world.json")}
     running = guardian.run_lock_held(camp.root / "logs" / guardian.REGISTRY)
+    cur = camp.root / "logs" / "current_round"  # written by the run as each round starts
+    current = cur.read_text().strip() if running and cur.exists() else None
+
+    def live_round(rid):  # the round the run is on; without its note, any round not frozen yet
+        return rid == current if current else rid not in frozen
     in_progress = [n["id"] for n in chosen if did_no_work(n) and running
-                   and (n.get("ext") or {}).get("round") not in frozen]
+                   and live_round((n.get("ext") or {}).get("round"))]
     gone = {n["id"] for n in chosen if did_no_work(n)} - set(in_progress)
     victims = [n["id"] for n in tree.nodes() if n["id"] in gone]
     rep = {"pruned": victims, "refused": refused, "in_progress": in_progress,
@@ -114,7 +119,7 @@ def prune(camp: Campaign, ids: set[str] | None = None, error_match: str | None =
             if (work / nid).exists():
                 _rmtree(work / nid)
         ws._in_repo("worktree", "prune", check=False)
-        have = set(ws._in_repo("branch", "--list", "drsi/*", "--format=%(refname:short)", check=False).split())
+        have = set(ws._in_repo("branch", "--list", "drsi/*", "--format=%(refname:short)").split())  # fails loudly
         doomed = [f"drsi/{nid}" for nid in victims if f"drsi/{nid}" in have]
         for k in range(0, len(doomed), 200):
             ws._in_repo("branch", "-D", "-q", *doomed[k:k + 200])  # a failure stops the prune before the tree
@@ -125,11 +130,10 @@ def prune(camp: Campaign, ids: set[str] | None = None, error_match: str | None =
 
     logp = camp.root / "logs" / "prune.jsonl"  # before the tree: the ids stay reserved even if what follows fails
     logp.parent.mkdir(parents=True, exist_ok=True)
-    with open(logp, "a") as fh:
-        fh.write(json.dumps({"at": utcnow(), "ids": victims, "reason": reason,
-                             "criteria": {"ids": sorted(ids) if ids else None, "error_match": error_match},
-                             "reparented": rep["reparented"], "worlds_removed": rep["worlds_removed"],
-                             "worlds_rewritten": rep["worlds_rewritten"]}, ensure_ascii=True) + "\n")
+    record_check(logp, {"at": utcnow(), "ids": victims, "reason": reason,  # ends a torn last line first
+                        "criteria": {"ids": sorted(ids) if ids else None, "error_match": error_match},
+                        "reparented": rep["reparented"], "worlds_removed": rep["worlds_removed"],
+                        "worlds_rewritten": rep["worlds_rewritten"]})
     rep["reparented"] = tree.prune(gone)
     from .live import write_map
     write_map(camp)

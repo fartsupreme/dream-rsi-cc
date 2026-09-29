@@ -48,7 +48,8 @@ class ReplayQuestionTest(unittest.TestCase):
         out = self.q.probe_batch(["C"])
         self.assertIsNone(out[0])
         self.assertNotIn("C", self.q.legal_actions())
-        self.assertEqual(self.q.probes, 3)  # the empty probe reveals nothing
+        self.assertEqual(self.q.probes, 4)  # the empty probe reveals nothing but costs a probe (round 24: live, every
+        # probe is an attempt)
         self.assertEqual(self.q.rounds, 4)
 
     def test_invalid_node_observed_with_fail_class(self):

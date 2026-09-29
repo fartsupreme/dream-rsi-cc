@@ -633,6 +633,8 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
     rounds = []
     for _ in range(n):
         round_id = next_round_id(camp)
+        (camp.root / "logs").mkdir(parents=True, exist_ok=True)
+        (camp.root / "logs" / "current_round").write_text(round_id)  # prune leaves this round alone while it runs
         runner = LiveRunner(camp, worker_fn, indexer, round_id, log=say, checker=checker)
         summary = live_round(camp, load_policy(policy_dir / "method.py"), runner)
         say(f"{round_id}: {summary['attempts']} attempts, {summary['valid']} valid, best {summary['best_score']}")
