@@ -146,15 +146,17 @@ class VerdictTest(unittest.TestCase):
 
     def test_a_duplicate_the_confirmation_overturns_is_not_final(self):
         confirm = {"same_mechanism_as": "", "cited_was_measured": True, "proposal_names_located_fix": False,
-                   "addresses_recorded_stopper": True, "verdict": "variant", "rationale": "differs in the merge"}
+                   "addresses_recorded_stopper": True, "verdict": "variant", "rationale": "differs in the merge",
+                   "what_differs": "splits the density pass in two"}  # round 22: an overturn states its difference
         r = check(self.t, FAMS, llm({"verdict": "duplicate", "nearest_ids": ["3"]}, confirm=confirm),
                   "radix bucket merge with a two-pass density split", confirm=True)
         self.assertEqual(r["verdict"], "variant")
         self.assertIn("confirmation", r["rule"])
 
     def test_the_confirmation_may_find_a_retry(self):
-        confirm = {"same_mechanism_as": "", "cited_was_measured": False, "proposal_names_located_fix": True,
-                   "addresses_recorded_stopper": True, "verdict": "retry", "rationale": "never measured"}
+        confirm = {"same_mechanism_as": "4", "cited_was_measured": False, "proposal_names_located_fix": True,
+                   "addresses_recorded_stopper": True, "verdict": "retry", "rationale": "never measured",
+                   "what_differs": "the crash at merge step 3 fixed"}  # round 22: the exact attempt, named
         r = check(self.t, FAMS, llm({"verdict": "duplicate", "nearest_ids": ["4"]}, confirm=confirm),
                   "cache oblivious bucket merge with the crash at merge step 3 fixed", confirm=True)
         self.assertEqual((r["verdict"], r["retry_of"]), ("retry", "4"))

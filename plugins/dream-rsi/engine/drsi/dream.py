@@ -102,9 +102,12 @@ def gate_worlds(n: int, W: int, budget: int) -> list[dict]:
 def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, timeout: int = 120) -> dict:
     """Run both policies at their default beta on live-like trees; True when any batch differs as a set. A
     revision that changes nothing live (only what happens when recorded roots or branches run out) must not
-    be deployed on its replay gain."""
+    be deployed on its replay gain. Also returns each policy's total probes there, since a revision that spends less
+    of a live round than the incumbent cannot be justified by replay (see deploy_checks)."""
+    if n < 1:
+        return {"ok": False, "error": "dream.gate_worlds must be at least 1 while dream.behaviour_gate is on"}
     worlds = gate_worlds(n, W, budget)
-    traces = {}
+    traces, probes = {}, {}
     with tempfile.TemporaryDirectory(prefix="drsi-gate-") as tmp:
         for label, path in (("cand", cand_path), ("inc", inc_path)):
             res = _run_once({"policy": str(Path(path).resolve()), "worlds": worlds, "W": W, "betas": [],
@@ -113,14 +116,18 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
                 return {"ok": False, "error": f"{label} fails on live-like trees: {res.get('error')}"}
             rows = res["runs"][str(float(res["default_beta"]))]
             traces[label] = [[sorted(b) for b in row["trace"]] for row in rows]
+            probes[label] = sum(len(b) for row in rows for b in row["trace"])
     same = sum(a == b for a, b in zip(traces["cand"], traces["inc"]))
-    return {"ok": True, "differs": same < n, "identical_rounds": same, "rounds": n}
+    return {"ok": True, "differs": same < n, "identical_rounds": same, "rounds": n,
+            "probes": probes["cand"], "incumbent_probes": probes["inc"]}
 
 
 def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: list[dict], params: dict,
                   d: dict) -> dict:
     """The candidate must beat the incumbent beyond resampling noise (paired bootstrap across worlds: the 5th
-    percentile of the reward difference must exceed dream.margin) and must change live behaviour."""
+    percentile of the reward difference must exceed dream.margin), must change live behaviour, and must not spend
+    less of a live round than the incumbent: replay can only reveal what was recorded, so it cannot see what the
+    work a revision gives up would have found."""
     import random
     B, margin = int(d.get("bootstrap", 500)), float(d.get("margin", 0.0))
     kw = {k: params[k] for k in ("W", "lam", "beta1", "beta2", "score", "penalty", "curve")}
@@ -143,6 +150,10 @@ def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: li
             return out | {"ok": False, "why": g.get("error")}
         if not g["differs"]:
             return out | {"ok": False, "why": "no change in live behaviour (identical batches on live-like trees)"}
+        if g["probes"] < g["incumbent_probes"]:
+            return out | {"ok": False, "why": f"less work live: {g['probes']} probes against the incumbent's "
+                                               f"{g['incumbent_probes']} on live-like trees, and replay cannot value "
+                                               "work beyond the record"}
     return out | {"ok": True}
 
 
@@ -188,11 +199,12 @@ parallel batches. `self.beta` in [0, 1] is your knob: low beta should mean cheap
 gets a budget of {cfg['search']['K1']} x max_parallelism probes.
 
 Stopping: returning [] ends the rollout. Stopping early earns nothing (the curve stays flat after the stop), and
-the trees hold only what earlier policies explored, so their ceiling is not a live stopping signal. Stop only
+while the record could still answer, each batch the budget had left counts as an empty batch in parallel_penalty.
+The trees hold only what earlier policies explored, so their ceiling is not a live stopping signal. Stop only
 after weighing every open branch, unopened root and repairable failure.
 Deployment: a revision replaces the incumbent only if it beats it on a paired bootstrap across the trees and it
-changes what the policy does in a live-like round (unbounded roots, no branch ends). A change that only acts
-when recorded roots or branches run out is not deployed.
+changes what the policy does in a live-like round (unbounded roots, no branch ends), without spending fewer probes
+there than the incumbent. A change that only acts when recorded roots or branches run out is not deployed.
 
 Prefix-only: decide only from what the question API reveals, `self.beta`, and your own bookkeeping.
 Never use unrevealed scores, hardcoded cell ids, tree-specific constants or absolute score targets.
@@ -246,7 +258,11 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     revisions: list[dict] = []
 
     best_path = method
-    for m in range(cfg["dream"]["M"]):
+    skipped = None
+    if not inc.get("ok"):  # nothing can be compared with an incumbent that does not replay: keep it, call no one
+        skipped = (f"the incumbent failed replay ({inc.get('stage', 'run')}: {inc.get('error', '')}); it is kept and "
+                   "no revision is asked for")
+    for m in range(0 if skipped else cfg["dream"]["M"]):
         with tempfile.TemporaryDirectory(prefix="drsi-dream-") as sb:
             sb = Path(sb)
             (sb / "method.py").write_text(best_src)
@@ -282,9 +298,9 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
         if rep["reward"] > best_reward + 1e-12:
             best_src, best_rep, best_reward, best_path = new_src, rep, rep["reward"], cand
 
-    deployed = best_src != inc_src and best_reward > inc_reward  # a tie keeps the incumbent
+    deployed = bool(inc.get("ok")) and best_src != inc_src and best_reward > inc_reward  # a tie keeps the incumbent
     checks = None
-    if deployed and inc.get("ok"):
+    if deployed:
         checks = deploy_checks(best_path, method, best_rep, inc, worlds, params, cfg["dream"])
         deployed = checks["ok"]
     version = None
@@ -296,7 +312,7 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     report = {"stamp": stamp, "deployed": deployed, "version": version, "incumbent_reward": inc_reward,
               "incumbent_ok": bool(inc.get("ok")), "incumbent_error": inc.get("error"),
               "best_reward": best_reward, "revisions": revisions, "worlds": [w["id"] for w in worlds],
-              "best_report": _strip(best_rep), "deploy_checks": checks}
+              "best_report": _strip(best_rep), "deploy_checks": checks, "skipped": skipped}
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / f"dream-{stamp}.json").write_text(json.dumps(report, indent=1, default=str))
     return report

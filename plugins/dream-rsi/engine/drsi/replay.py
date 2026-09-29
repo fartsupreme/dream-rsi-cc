@@ -91,7 +91,7 @@ def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, 
     signal = [i for i, w in enumerate(worlds) if world_best(w) is not None]
     per_beta, curves, pens = {}, {}, {}
     for beta, rows in raw["runs"].items():
-        atts, works, eq1s, sizes, pts, support = [], [], [], [], [], []
+        atts, works, eq1s, sizes, pts, support, unspent = [], [], [], [], [], [], 0
         for wi in signal:
             world, row = worlds[wi], rows[wi]
             size = max(1, len(reachable(world)))
@@ -103,6 +103,7 @@ def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, 
             eq1s.append(eq1_value(a, row["probes"], row["rounds"], beta1, beta2))
             sizes += row["batch_sizes"]
             support += [tuple(x) for x in row.get("support", [])]
+            unspent += int(row.get("unspent", 0))
             if curve == "clock":  # x = live decision rounds used / K1: the wall clock of a live round
                 kmax = max(1, int(raw.get("kmax") or 1))
                 pts.append([(t / kmax, attainment(b, base, best_w)) for t, b in row.get("curve_clock", [])])
@@ -115,7 +116,7 @@ def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, 
                           "batch_sizes": sizes, "per_world_attainment": atts}
         if beta in scored_keys:
             curves[beta] = pts
-            pens[beta] = support_penalty(support, W) if penalty == "support" else parallel_penalty(sizes, W)
+            pens[beta] = support_penalty(support, W, unspent) if penalty == "support" else parallel_penalty(sizes, W)
     swept = {b: r for b, r in per_beta.items() if b in swept_keys}
     auc = mean_curve_auc(curves) if signal else 0.0
     pen = sum(pens.values()) / len(pens) if pens else 1.0
@@ -194,7 +195,11 @@ def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
                         t += 1
                         curve_clock.append([t, q.best_score()])
             support = [[r, e, a] for r, e, a in zip(q.requested_sizes, q.empty_counts, answerable)]
-            out.append({"probes": q._probes, "rounds": q._rounds, "best": q.best_score(),
+            unspent = 0
+            if budget is not None and q._probes < budget and q.answerable(q.legal_actions()) > 0:
+                left = sum(1 for n in reachable(world) if str(n["id"]) not in q._obs)  # what the record still holds
+                unspent = -(-min(budget - q._probes, left) // max(1, W))
+            out.append({"probes": q._probes, "rounds": q._rounds, "best": q.best_score(), "unspent": unspent,
                         "batch_sizes": list(q._batch_sizes), "curve": [list(p) for p in q._curve],
                         "support": support, "curve_batch": curve_batch, "curve_clock": curve_clock,
                         "curve_canonical": curve_canonical})

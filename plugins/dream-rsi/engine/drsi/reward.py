@@ -46,13 +46,16 @@ def parallel_penalty(batch_sizes, W: int) -> float:
     return max(0.0, 1.0 - (sum(batch_sizes) / len(batch_sizes)) / W)
 
 
-def support_penalty(rounds, W: int) -> float:
+def support_penalty(rounds, W: int, unspent: int = 0) -> float:
     """1 - mean batch fill, counted only where the record can answer. rounds: (requested, empty, answerable)
     per batch, answerable = legal actions with a recorded continuation before the batch. A batch is full when
     it probes min(W, answerable) cells that reveal something: running out of recorded roots or reaching the end
     of a recorded branch (which never happens live, where every probe produces an attempt) is not charged, and
-    padding a batch with dead cells earns nothing. Batches the record cannot answer at all are skipped."""
+    padding a batch with dead cells earns nothing. Batches the record cannot answer at all are skipped.
+    unspent: batches a run left unused by stopping while the record could still answer them; each counts as empty,
+    so stopping never escapes the charge that continuing with an under-filled batch pays."""
     fills = [min(1.0, (req - empty) / min(W, ans)) for req, empty, ans in rounds if ans > 0 and req - empty > 0]
+    fills += [0.0] * max(0, int(unspent))
     return 1.0 - sum(fills) / len(fills) if fills else 1.0
 
 

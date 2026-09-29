@@ -20,6 +20,7 @@ from .live import PROCEDURAL, _file_lock, live_outcome, write_map
 from .scorer import run_scorer
 from .store import Campaign, _atomic_write, utcnow
 from .workspace import Workspaces
+from .worlds import worlds_lock
 
 
 def scorable(node: dict) -> bool:
@@ -110,14 +111,17 @@ def _update_worlds(camp: Campaign, ids: set[str]) -> None:
     if not ids:
         return
     tree = camp.tree
-    for path in sorted(Path(camp.root / "trace_pool").glob("*/world.json")):
-        world = json.loads(path.read_text())
-        changed = False
-        for n in world.get("nodes", []):
-            if n["id"] in ids:
-                node = tree.get(n["id"])
-                valid = bool(node.get("valid"))
-                n.update(score=node.get("score") if valid else None, valid=valid, fail_class=node.get("fail_class"))
-                changed = True
-        if changed:
-            _atomic_write(path, json.dumps(world, ensure_ascii=True))
+    pool = camp.root / "trace_pool"
+    with worlds_lock(pool):
+        for path in sorted(pool.glob("*/world.json")):
+            world = json.loads(path.read_text())
+            changed = False
+            for n in world.get("nodes", []):
+                if n["id"] in ids and n["id"] in tree:
+                    node = tree.get(n["id"])
+                    valid = bool(node.get("valid"))
+                    n.update(score=node.get("score") if valid else None, valid=valid,
+                             fail_class=node.get("fail_class"))
+                    changed = True
+            if changed:
+                _atomic_write(path, json.dumps(world, ensure_ascii=True))
