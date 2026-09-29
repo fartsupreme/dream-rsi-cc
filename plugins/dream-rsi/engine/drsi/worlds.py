@@ -1,7 +1,8 @@
 """Replay worlds: frozen discovery trees in the form the simulator reads.
 
 A world is {"id", "baseline", "nodes": [{"id", "parent", "score", "valid", "fail_class", "family"}]}.
-Once written to the trace pool a world is never modified.
+A world is written once, when its round finishes. Only two commands change one afterwards: `drsi rescore`
+(new readings of the same attempts) and `drsi prune` (attempts that did no work removed).
 """
 from __future__ import annotations
 

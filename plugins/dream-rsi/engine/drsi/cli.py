@@ -459,6 +459,26 @@ def cmd_rescore(a) -> int:
     return 0
 
 
+def cmd_prune(a) -> int:
+    from .prune import prune
+    camp = resolve_campaign(a.campaign)
+    if not a.ids and not a.error_match:
+        _err("drsi prune: name the attempts (--ids a,b,...) or the error text they carry (--error-match TEXT)")
+        return 2
+    ids = {i.strip() for i in a.ids.split(",") if i.strip()} if a.ids else None
+    rep = prune(camp, ids=ids, error_match=a.error_match, dry_run=a.dry_run, reason=a.reason or "",
+                log=lambda m: None)
+    for nid in rep["refused"]:
+        print(f"{nid}: kept (it did work: a score, changed files, or an outcome other than a failed worker)")
+    for nid in rep["in_progress"]:
+        print(f"{nid}: kept (its round is still running)")
+    verb = "would be removed" if a.dry_run else "removed"
+    print(f"{len(rep['pruned'])} attempts {verb}; {len(rep['reparented'])} re-rooted; frozen worlds removed "
+          f"{len(rep['worlds_removed'])}, rewritten {len(rep['worlds_rewritten'])}"
+          + ("" if a.dry_run else "; logged in logs/prune.jsonl"))
+    return 0
+
+
 def cmd_replay(a) -> int:
     camp = resolve_campaign(a.campaign)
     worlds = _worlds(camp, a.history)
@@ -676,6 +696,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--all", action="store_true", help="every live attempt that reached the scorer")
     s.add_argument("--parallel", type=int, default=4, help="scorings at once when scorer.serial is off")
     s.set_defaults(fn=cmd_rescore)
+    s = with_c(sub.add_parser("prune", help="remove recorded attempts that did no work (a failed worker, no score)"))
+    s.add_argument("--ids", help="comma-separated attempt ids")
+    s.add_argument("--error-match", help="remove attempts whose worker or orchestration error contains this text")
+    s.add_argument("--reason", help="why, for the log")
+    s.add_argument("--dry-run", action="store_true", help="report what would go, change nothing")
+    s.set_defaults(fn=cmd_prune)
     s = with_c(sub.add_parser("replay", help="score a policy by replay (default: the deployed one)"))
     s.add_argument("--policy")
     s.add_argument("--history", action="store_true")

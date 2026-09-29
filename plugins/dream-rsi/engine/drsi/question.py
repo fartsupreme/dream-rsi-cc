@@ -73,6 +73,8 @@ class QuestionBase:
         self._rounds = 0
         self._probing = False
         self._batch_sizes: list[int] = []
+        self._requested: list[int] = []  # cells asked for per batch (after the budget cut)
+        self._empty: list[int] = []  # cells per batch that revealed nothing
         self._curve: list[tuple[int, float | None]] = []  # (probes, best score) after every reveal
 
     def reset(self) -> None:
@@ -97,6 +99,14 @@ class QuestionBase:
     @property
     def curve(self) -> list[tuple[int, float | None]]:
         return list(self._curve)
+
+    @property
+    def requested_sizes(self) -> list[int]:
+        return list(self._requested)
+
+    @property
+    def empty_counts(self) -> list[int]:
+        return list(self._empty)
 
     def observed(self) -> dict[str, Observation]:
         return dict(self._obs)
@@ -162,6 +172,8 @@ class QuestionBase:
             children = self._expand(cells)
             self._rounds += 1
             self._batch_sizes.append(0)  # parallel work is what was revealed, counted as it is revealed
+            self._requested.append(len(cells))
+            self._empty.append(0)
             out: list[Observation | None] = []
             for cell, node in zip(cells, children):
                 if cell.startswith(ROOT):
@@ -169,6 +181,7 @@ class QuestionBase:
                 if node is None:
                     if not cell.startswith(ROOT):
                         self._exhausted.add(cell)
+                    self._empty[-1] += 1
                     out.append(None)
                     continue
                 obs = self._reveal(cell, node)
@@ -217,6 +230,12 @@ class ReplayQuestion(QuestionBase):
 
     def _root_capacity(self) -> int:
         return len(self._roots)
+
+    def answerable(self, cells) -> int:
+        """How many of these cells the record can answer (evaluator-side: a policy never sees this). A root slot
+        past the recorded roots, or a leaf whose recorded branch ended, has no counterpart live, where every
+        probe produces an attempt."""
+        return sum(1 for n in self._expand(list(cells)) if n is not None)
 
     def _expand(self, cells):
         out = []

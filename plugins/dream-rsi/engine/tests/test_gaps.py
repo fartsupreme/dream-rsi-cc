@@ -44,9 +44,13 @@ class GapTest(unittest.TestCase):
             p.write_text(HEADER + body)
             w = [chain_world(1, 6)]
             base = dict(W=1, budget=24, lam=0.0, beta1=0.01, beta2=0.01)
-            both = evaluate_policy(p, w, betas=[0.0, 1.0], **base)
-            only_low = evaluate_policy(p, w, betas=[0.0], **base)
+            both = evaluate_policy(p, w, betas=[0.0, 1.0], score="sweep", **base)
+            only_low = evaluate_policy(p, w, betas=[0.0], score="sweep", **base)
             self.assertGreater(both["auc"], only_low["auc"])
+            # scored at the default beta (what runs live), the sweep is report-only
+            d_both = evaluate_policy(p, w, betas=[0.0, 1.0], **base)
+            d_low = evaluate_policy(p, w, betas=[0.0], **base)
+            self.assertAlmostEqual(d_both["reward"], d_low["reward"])
 
     def test_update_many_refuses_to_change_id_or_parent(self):
         with tempfile.TemporaryDirectory() as d:
