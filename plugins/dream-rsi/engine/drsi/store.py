@@ -46,7 +46,7 @@ DEFAULT_CONFIG = {
     # paired-bootstrap gain (5th percentile above margin) that also changes live behaviour (behaviour_gate), and
     # no dream runs until min_worlds worlds can separate policies.
     "dream": {"M": 3, "betas": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], "lambda": 0.25,
-               "beta1": 0.01, "beta2": 0.01, "score": "default", "penalty": "support", "curve": "canonical",
+               "beta1": 0.01, "beta2": 0.01, "score": "default", "penalty": "live", "curve": "canonical",
                "bootstrap": 500, "margin": 0.0, "behaviour_gate": True, "gate_worlds": 32, "min_worlds": 4},
     # Spending is neither capped nor tracked (operator directive, 2026-09-22).
     "llm": {"model": "opus", "classifier_model": "opus", "worker_model": "opus"},

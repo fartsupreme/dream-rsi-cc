@@ -72,7 +72,7 @@ def _params(cfg: dict) -> dict:
     d = cfg["dream"]
     return {"W": W, "betas": d["betas"], "budget": cfg["search"]["K1"] * W, "lam": d["lambda"],
             "beta1": d["beta1"], "beta2": d["beta2"], "score": d.get("score", "default"),
-            "penalty": d.get("penalty", "support"), "curve": d.get("curve", "canonical")}
+            "penalty": d.get("penalty", "live"), "curve": d.get("curve", "canonical")}
 
 
 def gate_worlds(n: int, W: int, budget: int) -> list[dict]:
@@ -132,10 +132,7 @@ def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: li
     """The candidate must beat the incumbent beyond resampling noise (paired bootstrap across worlds: the 5th
     percentile of the reward difference must exceed dream.margin), must change live behaviour, and must not spend
     less of a live round than the incumbent: replay can only reveal what was recorded, so it cannot see what the
-    work a revision gives up would have found. Replay also offers only the recorded roots, where live offers new ones
-    without end, so two gains are checked against live-like trees: a gain only in the parallel penalty must show as
-    fuller batches there, and a revision that never continues a branch there (where the incumbent does) earned its
-    replay gain in a phase, after the recorded roots ran out, that it never reaches live."""
+    work a revision gives up would have found."""
     import random
     B, margin = int(d.get("bootstrap", 500)), float(d.get("margin", 0.0))
     kw = {k: params[k] for k in ("W", "lam", "beta1", "beta2", "score", "penalty", "curve")}
@@ -162,15 +159,6 @@ def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: li
             return out | {"ok": False, "why": f"less work live: {g['probes']} probes against the incumbent's "
                                                f"{g['incumbent_probes']} on live-like trees, and replay cannot value "
                                                "work beyond the record"}
-        if g["continuations"] == 0 and g["incumbent_continuations"] > 0:
-            return out | {"ok": False, "why": "never continues a branch on live-like trees, where roots never run out, "
-                                               "so its replay gain came after the recorded roots ran out, a phase it "
-                                               "never reaches live"}
-        if (cand_rep.get("auc") is not None and inc_rep.get("auc") is not None
-                and cand_rep["auc"] <= inc_rep["auc"] + 1e-9 and g["fill"] <= g["incumbent_fill"] + 1e-9):
-            return out | {"ok": False, "why": "the gain is only in the parallel penalty, and live-like trees show no "
-                                               f"fuller batches ({g['fill']} against {g['incumbent_fill']}): replay "
-                                               "charges batches that live would fill with new roots"}
     return out | {"ok": True}
 
 
@@ -197,8 +185,21 @@ def render_report(rep: dict, revisions: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+PENALTY_TEXT = {
+    "live": ("parallel_penalty = 1 - mean batch fill, where a batch's fill is the cells it probes out of "
+             "max_parallelism: live every probe is an attempt, whatever the record holds. Root slots never run out, "
+             "as live; a root slot past the tree's recorded roots, or a leaf past the end of its recorded branch, "
+             "reveals nothing (the tree holds only what was recorded) but still costs a probe."),
+    "support": ("parallel_penalty = 1 - mean batch fill, where a batch is full when it probes every cell the record "
+                "can answer, up to max_parallelism. Running out of recorded roots or reaching the end of a recorded "
+                "branch is not charged, and padding a batch earns nothing."),
+    "realized": "parallel_penalty = 1 - the mean number of cells a batch revealed, over max_parallelism.",
+}
+
+
 def build_prompt(cfg: dict) -> str:
     d = cfg["dream"]
+    penalty = PENALTY_TEXT.get(d.get("penalty", "live"), PENALTY_TEXT["live"])
     return f"""You are improving one prefix-only exploration policy. Edit only ./method.py, and only the lines
 between `{START}` and `{END}`. Everything outside the block must stay byte-identical.
 
@@ -208,20 +209,17 @@ attainment so far), crediting the cells of one batch in a fixed order (they run 
 you list them in does not count); these curves are averaged over the trees and integrated over work in [0, 1]
 (AUC), and
 reward = AUC - {d['lambda']} * parallel_penalty. attainment = how close the best revealed score gets to that
-tree's best (0..1); work = fraction of the tree's recorded attempts revealed; parallel_penalty = 1 - mean batch
-fill, where a batch is full when it probes every cell the record can answer, up to max_parallelism. Running out
-of recorded roots or reaching the end of a recorded branch is not charged (live has neither), and padding a
-batch earns nothing. Higher is better: reveal the attempts that turn out best as early as possible, using full
+tree's best (0..1); work = probes spent over the tree's recorded attempts; {penalty} Higher is better: reveal the attempts that turn out best as early as possible, using full
 parallel batches. `self.beta` in [0, 1] is your knob: low beta should mean cheap, high beta thorough. Each tree
 gets a budget of {cfg['search']['K1']} x max_parallelism probes.
 
 Stopping: returning [] ends the rollout. Stopping early earns nothing (the curve stays flat after the stop), and
-while the record could still answer, each batch the budget had left counts as an empty batch in parallel_penalty.
+each batch the budget had left counts as an empty batch in parallel_penalty.
 The trees hold only what earlier policies explored, so their ceiling is not a live stopping signal. Stop only
 after weighing every open branch, unopened root and repairable failure.
 Deployment: a revision replaces the incumbent only if it beats it on a paired bootstrap across the trees and it
-changes what the policy does in a live-like round (unbounded roots, no branch ends), without spending fewer probes
-there than the incumbent. A change that only acts when recorded roots or branches run out is not deployed.
+changes what the policy does in a live-like round (no branch ends), without spending fewer probes there than the
+incumbent.
 
 Prefix-only: decide only from what the question API reveals, `self.beta`, and your own bookkeeping.
 Never use unrevealed scores, hardcoded cell ids, tree-specific constants or absolute score targets.

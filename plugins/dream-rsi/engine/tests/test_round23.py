@@ -9,6 +9,8 @@ gains that come from that difference:
 - A policy that opens every legal root before anything else never continues a branch live (roots never run out), so
   its replay gain, earned after the recorded roots ran out, comes from a phase it never reaches live. A revision that
   never continues a branch on live-like trees, where the incumbent does, is not deployed.
+  (Round 24 replaced both guards: replay root slots no longer run out and fill is counted as live counts it, so
+  neither gain exists in replay; the tests below now check the outcome.)
 Novelty check:
 - The confirmation could overturn a duplicate to novel or variant while naming the attempt the proposal repeats.
 - Duplicates made by the other rules (a retry of an attempt not shown, a variant with no difference) still reached
@@ -74,11 +76,8 @@ class ReplayLiveGapTest(unittest.TestCase):
         worlds = roots_best_worlds()
         cand = self.policy("noplat", no_plateau)
         rs, rc = evaluate_policy(self.seed, worlds, **KW), evaluate_policy(cand, worlds, **KW)
-        self.assertAlmostEqual(rc["auc"], rs["auc"])
-        self.assertGreater(rc["reward"], rs["reward"])  # the gain is all penalty
-        out = deploy_checks(cand, self.seed, rc, rs, worlds, PARAMS, {"bootstrap": 200, "gate_worlds": 4})
-        self.assertFalse(out["ok"], out)
-        self.assertIn("parallel", out["why"])
+        self.assertLessEqual(rc["reward"], rs["reward"] + 1e-9)  # round 24: no gain left, penalty or otherwise
+        # round 24: replay now fills batches as live does, so there is no penalty-only gain to refuse
         pdir = self.root / "policy"
         pdir.mkdir()
         (pdir / "method.py").write_text(SEED_POLICY.read_text())
@@ -96,10 +95,8 @@ class ReplayLiveGapTest(unittest.TestCase):
         worlds = [chain_world(), chain_world(n_roots=3, depth=8, climb=0.05), chain_world(8, 5, 0.08)]
         cand = self.policy("allroots", all_roots)
         rs, rc = evaluate_policy(self.seed, worlds, **KW), evaluate_policy(cand, worlds, **KW)
-        self.assertGreater(rc["auc"], rs["auc"])  # replay likes it: after the recorded roots run out it ranks well
-        out = deploy_checks(cand, self.seed, rc, rs, worlds, PARAMS, {"bootstrap": 200, "gate_worlds": 4})
-        self.assertFalse(out["ok"], out)
-        self.assertIn("never continues", out["why"])
+        # round 24: replay roots no longer run out, so the phase that earned its gain never happens in replay either
+        self.assertLess(rc["reward"], rs["reward"])
 
 
 class ConfirmationReviewTest(unittest.TestCase):

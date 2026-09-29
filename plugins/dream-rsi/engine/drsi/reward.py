@@ -59,6 +59,14 @@ def support_penalty(rounds, W: int, unspent: int = 0) -> float:
     return 1.0 - sum(fills) / len(fills) if fills else 1.0
 
 
+def live_penalty(requested, W: int, unspent: int = 0) -> float:
+    """1 - mean batch fill as live counts it: every probed cell is an attempt, so a batch's fill is the cells it
+    requested out of W, whatever the record holds for them. unspent: batches a run left unused by stopping before
+    its budget; each counts as empty."""
+    fills = [min(1.0, r / W) for r in requested if r > 0] + [0.0] * max(0, int(unspent))
+    return 1.0 - sum(fills) / len(fills) if fills else 1.0
+
+
 def _step(points, x: float) -> float:
     """Best attainment reached with work <= x on one run's anytime curve."""
     best = 0.0

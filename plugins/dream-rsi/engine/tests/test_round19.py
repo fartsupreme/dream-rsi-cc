@@ -102,10 +102,12 @@ class DeploySupportTest(unittest.TestCase):
         rep = run_dream(self.pdir, self.worlds, Dev(stop_after_roots), CFG, self.logs)
         self.assertFalse(rep["deployed"], rep["revisions"])
 
-    def test_old_rule_deploys_a_change_that_only_acts_when_roots_run_out(self):
+    def test_a_change_that_only_acts_when_roots_run_out_cannot_act_in_replay(self):
+        # round 24: replay root slots no longer run out (as live), so the old rule's false gain is gone at the source
         (self.pdir / "method.py").write_text(SEED.read_text())
         rep = run_dream(self.pdir, self.worlds, Dev(seed_with_topup), OLD, self.logs)
-        self.assertTrue(rep["deployed"], rep["revisions"])
+        self.assertFalse(rep["deployed"], rep["revisions"])
+        self.assertAlmostEqual(rep["revisions"][0]["reward"], rep["incumbent_reward"])
 
     def test_change_that_only_acts_when_roots_run_out_is_not_deployed(self):
         (self.pdir / "method.py").write_text(SEED.read_text())

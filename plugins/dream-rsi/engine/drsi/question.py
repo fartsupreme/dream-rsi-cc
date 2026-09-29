@@ -182,6 +182,8 @@ class QuestionBase:
                     if not cell.startswith(ROOT):
                         self._exhausted.add(cell)
                     self._empty[-1] += 1
+                    self._probes += 1  # every probe is an attempt live and costs budget, revealing or not
+                    self._curve.append((self._probes, self.best_score()))
                     out.append(None)
                     continue
                 obs = self._reveal(cell, node)
@@ -228,8 +230,11 @@ class ReplayQuestion(QuestionBase):
         self._roots = self._kids.get(None, [])
         super().__init__(max_parallelism, world.get("baseline", 0.0), max_probes)
 
-    def _root_capacity(self) -> int:
-        return len(self._roots)
+    def _root_capacity(self) -> int | None:
+        """Unbounded under a budget, as live: a root slot past the recorded roots reveals nothing (the record holds
+        no attempt there), as continuing a branch past its recorded end does. With no budget the recorded roots are
+        the limit, or a run that explores until nothing is legal would never end."""
+        return None if self._max_probes is not None else len(self._roots)
 
     def answerable(self, cells) -> int:
         """How many of these cells the record can answer (evaluator-side: a policy never sees this). A root slot

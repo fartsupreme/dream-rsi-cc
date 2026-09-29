@@ -256,7 +256,7 @@ class NoveltyReviewTest(unittest.TestCase):
         self.assertNotIn("an unrelated widget cache", cited)
         self.assertIn("an unrelated widget cache", prompt)
         rules = prompt.split("<<< RECORDS", 1)[0]
-        self.assertIn("cited in-flight", rules)
+        self.assertIn("in-flight proposal", rules)  # round 24: cited or not
         self.assertIn("counts as tried", rules)
 
     def test_in_flight_proposals_are_cited_by_the_label_they_are_shown_with(self):
