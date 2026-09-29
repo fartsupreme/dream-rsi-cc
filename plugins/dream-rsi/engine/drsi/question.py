@@ -6,12 +6,18 @@ reveals one child per probed cell. In replay the child comes from the frozen
 record; in live mode a worker produces it.
 
 Replay rule (paper: Child(v) is v's recorded child, or ∅): a leaf reveals its
-first recorded child. A leaf with no recorded child reveals nothing and is
-marked exhausted. Siblings recorded under an interior node are unreachable,
-because only leaves are actions (A(T) = {r} ∪ leaves).
+first recorded child. Siblings recorded under an interior node are unreachable,
+because only leaves are actions (A(T) = {r} ∪ leaves). Past the record (a leaf
+with no recorded child, a root slot beyond the recorded roots) a budgeted replay
+reveals a failed attempt, as live, where every probe is an attempt: the record
+holds nothing better, and a policy sees exactly what a live question shows it.
+Without a budget the paper's ∅ stands: nothing is revealed, the leaf is
+exhausted and the recorded roots are the limit, so a run that explores until
+nothing is legal still ends.
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 
@@ -74,7 +80,6 @@ class QuestionBase:
         self._probing = False
         self._batch_sizes: list[int] = []
         self._requested: list[int] = []  # cells asked for per batch (after the budget cut)
-        self._empty: list[int] = []  # cells per batch that revealed nothing
         self._curve: list[tuple[int, float | None]] = []  # (probes, best score) after every reveal
 
     def reset(self) -> None:
@@ -99,14 +104,6 @@ class QuestionBase:
     @property
     def curve(self) -> list[tuple[int, float | None]]:
         return list(self._curve)
-
-    @property
-    def requested_sizes(self) -> list[int]:
-        return list(self._requested)
-
-    @property
-    def empty_counts(self) -> list[int]:
-        return list(self._empty)
 
     def observed(self) -> dict[str, Observation]:
         return dict(self._obs)
@@ -173,16 +170,14 @@ class QuestionBase:
             self._rounds += 1
             self._batch_sizes.append(0)  # parallel work is what was revealed, counted as it is revealed
             self._requested.append(len(cells))
-            self._empty.append(0)
             out: list[Observation | None] = []
             for cell, node in zip(cells, children):
                 if cell.startswith(ROOT):
                     self._opened_slots.add(int(cell[len(ROOT):]))
-                if node is None:
+                if node is None:  # only an unbudgeted replay: the paper's empty child
                     if not cell.startswith(ROOT):
                         self._exhausted.add(cell)
-                    self._empty[-1] += 1
-                    self._probes += 1  # every probe is an attempt live and costs budget, revealing or not
+                    self._probes += 1
                     self._curve.append((self._probes, self.best_score()))
                     out.append(None)
                     continue
@@ -217,7 +212,8 @@ class QuestionBase:
 
 
 class ReplayQuestion(QuestionBase):
-    """A frozen discovery tree used as a zero-cost simulator."""
+    """A frozen discovery tree used as a zero-cost simulator. Its public surface is the live question's: anything
+    only replay could answer would let a policy act differently in replay than live."""
 
     def __init__(self, world: dict, max_parallelism: int, max_probes: int | None = None):
         self._world = world
@@ -228,27 +224,40 @@ class ReplayQuestion(QuestionBase):
             p = n.get("parent")
             self._kids.setdefault(None if p is None else str(p), []).append(str(n["id"]))
         self._roots = self._kids.get(None, [])
+        fails = Counter(n.get("fail_class") for n in nodes if not n.get("valid", n.get("score") is not None)
+                        and n.get("fail_class"))
+        self._fail_class = fails.most_common(1)[0][0] if fails else "ok"  # "ok": the scorer ran and found it invalid
+        self._made = 0  # attempts revealed past the record so far
         super().__init__(max_parallelism, world.get("baseline", 0.0), max_probes)
 
     def _root_capacity(self) -> int | None:
-        """Unbounded under a budget, as live: a root slot past the recorded roots reveals nothing (the record holds
-        no attempt there), as continuing a branch past its recorded end does. With no budget the recorded roots are
-        the limit, or a run that explores until nothing is legal would never end."""
+        """Unbounded under a budget, as live. With no budget the recorded roots are the limit, or a run that
+        explores until nothing is legal would never end."""
         return None if self._max_probes is not None else len(self._roots)
 
-    def answerable(self, cells) -> int:
-        """How many of these cells the record can answer (evaluator-side: a policy never sees this). A root slot
-        past the recorded roots, or a leaf whose recorded branch ended, has no counterpart live, where every
-        probe produces an attempt."""
-        return sum(1 for n in self._expand(list(cells)) if n is not None)
+    def _recorded(self, cell: str) -> dict | None:
+        if cell.startswith(ROOT):
+            j = int(cell[len(ROOT):])
+            return self._rec[self._roots[j]] if j < len(self._roots) else None
+        kids = [k for k in self._kids.get(cell, []) if k not in self._obs]
+        return self._rec[kids[0]] if kids else None
+
+    def _past_record(self, cell: str) -> dict:
+        """What live would show for a probe the record cannot answer: a failed attempt (no score, the tree's usual
+        failure class), in its parent's family, under an id in the tree's own style that no recorded node has."""
+        while True:
+            self._made += 1
+            nid = f"{self._world.get('id', 'world')}-{self._made:03d}"
+            if nid not in self._rec and nid not in self._obs:
+                break
+        family = None if cell.startswith(ROOT) else self._obs[cell].family
+        return {"id": nid, "score": None, "valid": False, "fail_class": self._fail_class, "family": family}
 
     def _expand(self, cells):
         out = []
         for c in cells:
-            if c.startswith(ROOT):
-                j = int(c[len(ROOT):])
-                out.append(self._rec[self._roots[j]] if j < len(self._roots) else None)
-            else:
-                kids = [k for k in self._kids.get(c, []) if k not in self._obs]
-                out.append(self._rec[kids[0]] if kids else None)
+            node = self._recorded(c)
+            if node is None and self._max_probes is not None:
+                node = self._past_record(c)
+            out.append(node)
         return out

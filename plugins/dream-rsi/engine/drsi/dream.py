@@ -22,14 +22,15 @@ START, END = "# EVOLVE-BLOCK-START", "# EVOLVE-BLOCK-END"
 API_NOTES = """Question API (all a policy may use):
 - question.reset(); question.observed() -> {id: Observation(id, parent_id, branch, attempt, seq, score, valid,
   fail_class, family)}; question.best_score(); question.baseline_score; question.max_parallelism;
-  question.probes (nodes revealed so far); question.rounds (batches probed so far)
+  question.probes (probes spent so far; each revealed one attempt); question.rounds (batches probed so far)
 - question.legal_actions() -> root slots ("root:<j>", open a new branch) + leaves of the revealed tree
 - question.legal_roots() -> the next available root slots
 - question.meta(cell) -> CellMeta(branch, attempt, parent_id, seq, tags)
 - question.probe_batch(cells, on_reveal=...) -> reveals one child per cell. A batch must be non-empty,
   duplicate-free, at most max_parallelism long, and contain only legal actions.
-Replay rules: a leaf reveals its recorded child; a leaf with no recorded child reveals nothing (None) and
-stops being legal; a root slot reveals the next recorded root. Only leaves and root slots are actions.
+Replay rules: a root slot reveals the next recorded root and a leaf its recorded child. Past the record (a root
+slot beyond the recorded roots, a leaf beyond the end of its recorded branch) a probe reveals a failed attempt, as a
+live attempt can fail: no score, not valid. Only leaves and root slots are actions.
 """
 
 
@@ -68,11 +69,21 @@ def block_problems(block: str) -> list[str]:
 
 
 def _params(cfg: dict) -> dict:
+    """The replay ranking a campaign's config asks for. The parallel penalty is always live fill: a campaign created
+    while "support" was the default (or set to "realized") still stores it, and ranks by "live" (see config_warnings)."""
     W = cfg["search"]["W"]
     d = cfg["dream"]
     return {"W": W, "betas": d["betas"], "budget": cfg["search"]["K1"] * W, "lam": d["lambda"],
             "beta1": d["beta1"], "beta2": d["beta2"], "score": d.get("score", "default"),
-            "penalty": d.get("penalty", "live"), "curve": d.get("curve", "canonical")}
+            "penalty": "live", "curve": d.get("curve", "canonical")}
+
+
+def config_warnings(cfg: dict) -> list[str]:
+    p = cfg["dream"].get("penalty", "live")
+    if p == "live":
+        return []
+    return [f"dream.penalty = {p!r} is no longer supported (it paid for gains that do not exist live); ranking by "
+            f"'live'. Set it with: drsi config --set dream.penalty=live"]
 
 
 def gate_worlds(n: int, W: int, budget: int) -> list[dict]:
@@ -107,7 +118,7 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
     if n < 1:
         return {"ok": False, "error": "dream.gate_worlds must be at least 1 while dream.behaviour_gate is on"}
     worlds = gate_worlds(n, W, budget)
-    traces, probes, batches, continued = {}, {}, {}, {}
+    traces, probes = {}, {}
     with tempfile.TemporaryDirectory(prefix="drsi-gate-") as tmp:
         for label, path in (("cand", cand_path), ("inc", inc_path)):
             res = _run_once({"policy": str(Path(path).resolve()), "worlds": worlds, "W": W, "betas": [],
@@ -117,14 +128,9 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
             rows = res["runs"][str(float(res["default_beta"]))]
             traces[label] = [[sorted(b) for b in row["trace"]] for row in rows]
             probes[label] = sum(len(b) for row in rows for b in row["trace"])
-            batches[label] = sum(1 for row in rows for b in row["trace"] if b)
-            continued[label] = sum(1 for row in rows for b in row["trace"] for c in b if not c.startswith("root:"))
     same = sum(a == b for a, b in zip(traces["cand"], traces["inc"]))
-    fill = {k: probes[k] / (max(1, batches[k]) * W) for k in probes}  # live, every probe is an attempt
     return {"ok": True, "differs": same < n, "identical_rounds": same, "rounds": n,
-            "probes": probes["cand"], "incumbent_probes": probes["inc"], "fill": round(fill["cand"], 4),
-            "incumbent_fill": round(fill["inc"], 4), "continuations": continued["cand"],
-            "incumbent_continuations": continued["inc"]}
+            "probes": probes["cand"], "incumbent_probes": probes["inc"]}
 
 
 def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: list[dict], params: dict,
@@ -185,21 +191,14 @@ def render_report(rep: dict, revisions: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-PENALTY_TEXT = {
-    "live": ("parallel_penalty = 1 - mean batch fill, where a batch's fill is the cells it probes out of "
-             "max_parallelism: live every probe is an attempt, whatever the record holds. Root slots never run out, "
-             "as live; a root slot past the tree's recorded roots, or a leaf past the end of its recorded branch, "
-             "reveals nothing (the tree holds only what was recorded) but still costs a probe."),
-    "support": ("parallel_penalty = 1 - mean batch fill, where a batch is full when it probes every cell the record "
-                "can answer, up to max_parallelism. Running out of recorded roots or reaching the end of a recorded "
-                "branch is not charged, and padding a batch earns nothing."),
-    "realized": "parallel_penalty = 1 - the mean number of cells a batch revealed, over max_parallelism.",
-}
+PENALTY_TEXT = ("parallel_penalty = 1 - mean batch fill, where a batch's fill is the cells it probes out of "
+                "max_parallelism: live every probe is an attempt. Root slots never run out, as live; past the tree's "
+                "record (a root slot beyond its recorded roots, a leaf beyond the end of its recorded branch) a probe "
+                "reveals a failed attempt, since the tree holds only what was recorded.")
 
 
 def build_prompt(cfg: dict) -> str:
     d = cfg["dream"]
-    penalty = PENALTY_TEXT.get(d.get("penalty", "live"), PENALTY_TEXT["live"])
     return f"""You are improving one prefix-only exploration policy. Edit only ./method.py, and only the lines
 between `{START}` and `{END}`. Everything outside the block must stay byte-identical.
 
@@ -209,7 +208,7 @@ attainment so far), crediting the cells of one batch in a fixed order (they run 
 you list them in does not count); these curves are averaged over the trees and integrated over work in [0, 1]
 (AUC), and
 reward = AUC - {d['lambda']} * parallel_penalty. attainment = how close the best revealed score gets to that
-tree's best (0..1); work = probes spent over the tree's recorded attempts; {penalty} Higher is better: reveal the attempts that turn out best as early as possible, using full
+tree's best (0..1); work = probes spent over the tree's recorded attempts; {PENALTY_TEXT} Higher is better: reveal the attempts that turn out best as early as possible, using full
 parallel batches. `self.beta` in [0, 1] is your knob: low beta should mean cheap, high beta thorough. Each tree
 gets a budget of {cfg['search']['K1']} x max_parallelism probes.
 
@@ -327,7 +326,8 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     report = {"stamp": stamp, "deployed": deployed, "version": version, "incumbent_reward": inc_reward,
               "incumbent_ok": bool(inc.get("ok")), "incumbent_error": inc.get("error"),
               "best_reward": best_reward, "revisions": revisions, "worlds": [w["id"] for w in worlds],
-              "best_report": _strip(best_rep), "deploy_checks": checks, "skipped": skipped}
+              "best_report": _strip(best_rep), "deploy_checks": checks, "skipped": skipped,
+              "warnings": config_warnings(cfg)}
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / f"dream-{stamp}.json").write_text(json.dumps(report, indent=1, default=str))
     return report

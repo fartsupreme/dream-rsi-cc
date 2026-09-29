@@ -9,7 +9,7 @@ from drsi.families import family_stats
 from drsi.guard import check_policy_source
 from drsi.novelty import check
 from drsi.replay import evaluate_policy
-from drsi.reward import parallel_penalty
+from drsi.reward import live_penalty
 from drsi.scorer import run_scorer
 from drsi.store import Tree, make_node
 from tests.helpers import ScriptedLLM
@@ -65,7 +65,7 @@ class TamperProofMetricsTest(unittest.TestCase):
 
 class PenaltyClampTest(unittest.TestCase):
     def test_penalty_never_negative(self):
-        self.assertEqual(parallel_penalty([100], W=4), 0.0)
+        self.assertEqual(live_penalty([100], W=4), 0.0)
 
 
 class SymlinkTest(LiveIntegrityBase):

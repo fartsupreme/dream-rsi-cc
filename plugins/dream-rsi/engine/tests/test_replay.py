@@ -48,7 +48,7 @@ EARLY_WORLD = {"id": "early", "baseline": 0.0, "nodes": [
 class AnytimeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.kw = dict(W=2, betas=[0.0, 1.0], budget=None, lam=0.25, beta1=0.01, beta2=0.01)
+        self.kw = dict(W=2, betas=[0.0, 1.0], budget=4, lam=0.25, beta1=0.01, beta2=0.01)  # the world's 4 attempts
 
     def tearDown(self):
         self.tmp.cleanup()

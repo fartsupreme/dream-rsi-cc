@@ -22,7 +22,7 @@ from .llm import ClaudeCLI
 from .checks import pending_checks, run_check  # noqa: F401 - pending_checks is part of the CLI API
 from .novelty import render_check
 from .agent import ClaudeAgent
-from .dream import SEED_POLICY, run_dream
+from .dream import SEED_POLICY, _params, config_warnings, run_dream
 from .live import WORKER_REPORT_SCHEMA, WORKER_TOOLS, LiveRunner, run_cycles, write_map
 from .replay import evaluate_policy
 from .store import Campaign, default_home
@@ -493,10 +493,9 @@ def cmd_replay(a) -> int:
         print("no replay worlds yet: run `drsi run` first (or pass --history to replay the imported record)")
         return 1
     cfg = camp.config
-    W = cfg["search"]["W"]
-    rep = evaluate_policy(Path(a.policy) if a.policy else _policy_path(camp), worlds, W=W,
-                          betas=cfg["dream"]["betas"], budget=cfg["search"]["K1"] * W, lam=cfg["dream"]["lambda"],
-                          beta1=cfg["dream"]["beta1"], beta2=cfg["dream"]["beta2"])
+    for w in config_warnings(cfg):
+        print(f"warning: {w}")
+    rep = evaluate_policy(Path(a.policy) if a.policy else _policy_path(camp), worlds, **_params(cfg))  # as the dream ranks
     if not rep.get("ok"):
         print(f"policy failed at {rep.get('stage')}: {rep.get('error')}")
         return 1
@@ -515,6 +514,8 @@ def cmd_dream(a) -> int:
         return 1
     _policy_path(camp)
     d = run_dream(camp.root / "policy", worlds, make_developer(camp), camp.config, camp.root / "logs")
+    for w in d.get("warnings", []):
+        print(f"warning: {w}")
     for r in d["revisions"]:
         extra = f" reward {r['reward']:.4f}" if r.get("reward") is not None else ""
         print(f"  revision {r['m']}: {r['stage']}{extra}{' — ' + r['error'][:160] if r.get('error') else ''}")

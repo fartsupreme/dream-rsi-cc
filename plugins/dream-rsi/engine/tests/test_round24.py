@@ -5,7 +5,8 @@ bypassed both round-23 guards and showed each refusing a revision that is better
 replay offered only the recorded roots, where live offers new roots without end, and it charged only cells the
 record could answer, where every live probe is an attempt. So replay now works as live does:
 - root slots never run out; a slot past the recorded roots reveals nothing, as continuing a branch past its
-  recorded end already did (replay can value only what was recorded, in depth and in breadth alike);
+  recorded end already did (replay can value only what was recorded, in depth and in breadth alike; round 25: past
+  the record a budgeted replay reveals a failed attempt, as live shows one);
 - every probe costs budget, revealing or not;
 - the parallel penalty is live fill, cells requested per batch out of W, and a run that stops early leaves its
   unspent batches empty.
@@ -82,19 +83,19 @@ def many_root_worlds(n=4, roots=40):
 
 
 class LiveLikeReplayTest(unittest.TestCase):
-    def test_root_slots_do_not_run_out_and_one_past_the_record_reveals_nothing(self):
+    def test_root_slots_do_not_run_out(self):
         q = ReplayQuestion(chain_world(2, 2), 4, max_probes=10)
         self.assertEqual(q.legal_roots(), ["root:0", "root:1", "root:2", "root:3"])
         out = q.probe_batch(["root:0", "root:1", "root:2", "root:3"])
-        self.assertEqual([o is None for o in out], [False, False, True, True])
+        self.assertEqual([o.valid for o in out], [True, True, False, False])  # round 25: a failed attempt past the record
         self.assertEqual(len(q.legal_roots()), 4)  # still four fresh slots, as live
 
     def test_every_probe_costs_budget_revealing_or_not(self):
         q = ReplayQuestion(chain_world(2, 2), 4, max_probes=3)
-        q.probe_batch(["root:2", "root:3"])  # two slots past the two recorded roots: nothing revealed
+        q.probe_batch(["root:2", "root:3"])  # two slots past the two recorded roots
         self.assertEqual(q.legal_roots(), ["root:0", "root:1", "root:4", "root:5"])
         q.probe_batch(["root:4"])
-        with self.assertRaises(IllegalBatch):  # three empty probes spent the budget of three
+        with self.assertRaises(IllegalBatch):  # three probes past the record spent the budget of three
             q.probe_batch(["root:0"])
 
     def test_the_penalty_is_live_fill_with_unspent_batches_empty(self):

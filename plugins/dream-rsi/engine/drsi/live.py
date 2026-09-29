@@ -646,6 +646,8 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
                                                "incumbent_reward": None, "best_reward": None}})
             continue
         d = run_dream(policy_dir, worlds, developer, camp.config, camp.root / "logs")
+        for w in d.get("warnings", []):
+            say(f"{round_id}: warning: {w}")
         if d.get("skipped"):
             say(f"{round_id}: dream skipped: {d['skipped']}")
         else:
