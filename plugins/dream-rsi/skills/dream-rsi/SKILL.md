@@ -16,9 +16,11 @@ remembering it. `drsi` is `"${CLAUDE_PLUGIN_ROOT}/bin/drsi"`; `drsi list` names 
    dead, untried), what stopped each, the last 10 attempts, untried directions.
 2. Write the proposal to a file: one paragraph naming the mechanism and why it could get past what stopped
    the nearest attempts.
-3. `drsi check -c <campaign> --file <proposal>` — exit 0 novel, 3 variant (allowed), 4 duplicate.
-   On 4, choose a different mechanism. The judge compares mechanisms, not wording. Duplicates come only
-   from the record; the judge's doubts and family warnings are advice to weigh, not vetoes.
+3. `drsi check -c <campaign> --file <proposal>` — exit 0 novel, 3 variant (allowed), 4 duplicate,
+   5 off target, 6 retry (allowed). On 4, choose a different mechanism. On 5, aim the difference at what stopped
+   the family, or choose another direction. A retry names the located bug and its fix in an attempt that bug
+   stopped before it was measured. The judge compares mechanisms, not wording. Duplicates come only from the
+   record; the judge's doubts and family warnings are advice to weigh, not vetoes.
 4. Do the attempt and record it in the project's own ledger as usual.
 5. `drsi sync -c <campaign>` so the next attempt (or the next session) sees it.
 

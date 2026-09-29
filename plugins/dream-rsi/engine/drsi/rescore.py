@@ -92,7 +92,8 @@ def _judge_outcomes(camp: Campaign) -> None:
         parent = tree.get(node["parent"]) if node.get("parent") else None
         ref = parent["score"] if parent and parent.get("valid") else baseline
         outcome, killed_by = live_outcome({"valid": node.get("valid"), "score": node.get("score"),
-                                           "fail_class": node.get("fail_class")}, ref)
+                                           "fail_class": node.get("fail_class")}, ref,
+                                          float(camp.config["live"].get("pass_margin", 0.0)))
         art = node.get("artifacts") or {}
         if (art.get("outcome"), art.get("killed_by")) != (outcome, killed_by):
             def fn(n, outcome=outcome, killed_by=killed_by):

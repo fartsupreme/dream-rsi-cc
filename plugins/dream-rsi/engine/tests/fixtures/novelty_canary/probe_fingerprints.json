@@ -1,0 +1,652 @@
+{
+ "ex1": {
+  "mechanism": "Polynomial score in bin capacity over item powers, sign-flipped for bins larger than item, then first-differenced along bin order.",
+  "object": "per-bin priority score vector",
+  "key_move": "Root attempt: FunSearch Weibull polynomial with neighbour-difference step.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no excess measured on OR3 or Weibull.",
+  "family_hint": "Weibull polynomial with differencing"
+ },
+ "ex2": {
+  "mechanism": "Running histogram of seen item sizes; priority = -residual + 20 \u00d7 probability a future item closes that residual gap.",
+  "object": "online item-size histogram",
+  "key_move": "Root attempt: fill-probability term added to best-fit.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; uses only past items so stays online; not measured.",
+  "family_hint": "empirical fill-probability scoring"
+ },
+ "ex3": {
+  "mechanism": "Non-monotone step lookup on residual r = bin - item: tight gaps highest, mid gaps 8-9 lowest, large gaps between.",
+  "object": "residual-to-score step table",
+  "key_move": "Root attempt: FunSearch OR3 non-monotone step table.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no measured excess on either set.",
+  "family_hint": "non-monotone residual step table"
+ },
+ "ex4": {
+  "mechanism": "CMA-ES fits 8 weights of a linear score over residual, item, fill-probability, age, fragment features; trained OR3 half, tested elsewhere.",
+  "object": "8-feature linear scoring weights",
+  "key_move": "Root attempt: evolution strategy tunes hand-crafted feature weights on OR3 0-9.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; OR3-only training risks failing G-WB, unmeasured.",
+  "family_hint": "CMA-ES tuned linear features"
+ },
+ "pa1": {
+  "mechanism": "Priority = negative squared residual capacity after placement; argmax equals best fit.",
+  "object": "residual capacity per bin",
+  "key_move": "Quadratic penalty on leftover gap instead of linear.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Monotone transform of residual yields identical argmax to plain best fit; no measurement.",
+  "family_hint": "best-fit residual monotone transform"
+ },
+ "pa2": {
+  "mechanism": "Harmonic-k with k=6: classify items by interval (C/(i+1), C/i], pack each class in reserved bins with best fit.",
+  "object": "size-class reserved bins",
+  "key_move": "Segregate items into six harmonic size classes.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; class segregation typically wastes space versus best fit; unmeasured.",
+  "family_hint": "harmonic size-class segregation"
+ },
+ "pa3": {
+  "mechanism": "Replace histogram in fill-probability score with Gaussian kernel density estimate (bandwidth 2) of seen item sizes.",
+  "object": "item-size density estimate",
+  "key_move": "Smooth histogram with Gaussian KDE.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; variant of fill-probability scoring, not measured.",
+  "family_hint": "empirical fill-probability scoring"
+ },
+ "pa4": {
+  "mechanism": "Ablate the first-difference step from the Weibull polynomial heuristic and compare excess.",
+  "object": "Weibull polynomial heuristic",
+  "key_move": "Remove score[1:] -= score[:-1] differencing.",
+  "kind": "measurement",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Ablation proposed; no result recorded.",
+  "family_hint": "Weibull polynomial with differencing"
+ },
+ "pa5": {
+  "mechanism": "Sample target bin from softmax over best-fit priorities exp(-r/T), T=0.5, instead of argmax.",
+  "object": "bin selection rule",
+  "key_move": "Stochastic softmax selection replaces deterministic argmax.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; randomisation likely adds excess over best fit; unmeasured.",
+  "family_hint": "stochastic softmax bin selection"
+ },
+ "pa6": {
+  "mechanism": "CMA-ES tunes 8-feature linear score minimising max over datasets of excess divided by gate threshold.",
+  "object": "8-feature linear scoring weights",
+  "key_move": "Joint OR3+Weibull minimax objective instead of OR3-only training.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; addresses cross-dataset generalisation, unmeasured.",
+  "family_hint": "CMA-ES tuned linear features"
+ },
+ "pa7": {
+  "mechanism": "Bounded-space packing: only the 20 most recently opened bins remain eligible; older bins treated closed.",
+  "object": "set of open bins",
+  "key_move": "Cap open bins at K=20.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; restricting bins can only lose packing opportunities; unmeasured.",
+  "family_hint": "bounded open-bin window"
+ },
+ "pa8": {
+  "mechanism": "Subtract 100 from priority when resulting residual is positive but below smallest item size seen so far.",
+  "object": "residual fragment penalty",
+  "key_move": "Penalise unfillable fragment residuals.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; unmeasured.",
+  "family_hint": "unfillable-fragment penalty"
+ },
+ "rn1": {
+  "mechanism": "Priority = negative squared residual capacity after placement; argmax equals best fit.",
+  "object": "residual capacity per bin",
+  "key_move": "Reworded quadratic residual penalty.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Same as pa1: monotone transform reduces to best fit; unmeasured.",
+  "family_hint": "best-fit residual monotone transform"
+ },
+ "rn2": {
+  "mechanism": "Six harmonic size classes with reciprocal-integer edges, dedicated bins per class, best fit within class.",
+  "object": "size-class reserved bins",
+  "key_move": "Reworded harmonic-k segregation.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Same as pa2; unmeasured.",
+  "family_hint": "harmonic size-class segregation"
+ },
+ "rn3": {
+  "mechanism": "Online empirical item-size distribution; favour bin whose residual is most likely closed by a future item, traded with tightness.",
+  "object": "online item-size distribution",
+  "key_move": "Reworded fill-probability lookahead.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Same as ex2; unmeasured.",
+  "family_hint": "empirical fill-probability scoring"
+ },
+ "rn4": {
+  "mechanism": "Quadratic and cubic capacity/item ratio terms, sign-flipped for roomy bins, then first-differenced along bin order.",
+  "object": "per-bin priority score vector",
+  "key_move": "Reworded Weibull polynomial with differencing.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Same as ex1; unmeasured.",
+  "family_hint": "Weibull polynomial with differencing"
+ },
+ "rn5": {
+  "mechanism": "Non-monotone residual lookup: tight residuals highest, 8-9 unit residuals lowest, wide residuals intermediate.",
+  "object": "residual-to-score step table",
+  "key_move": "Reworded non-monotone step table.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Same as ex3; unmeasured.",
+  "family_hint": "non-monotone residual step table"
+ },
+ "rn6": {
+  "mechanism": "CMA-ES fits weights of 8-descriptor linear scorer, trained on half the OR3 set, validated on other half.",
+  "object": "8-feature linear scoring weights",
+  "key_move": "Reworded CMA-ES linear feature tuning.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Same as ex4; unmeasured.",
+  "family_hint": "CMA-ES tuned linear features"
+ },
+ "rn7": {
+  "mechanism": "Buffer five arriving items and insert them in decreasing size order.",
+  "object": "arrival lookahead buffer",
+  "key_move": "Look ahead and reorder items within a window.",
+  "kind": "construction",
+  "outcome": "refuted",
+  "killed_by": "G-ONLINE: looks at future items and reorders",
+  "why": "Violates pure-online constraint by construction.",
+  "family_hint": "lookahead reordering"
+ },
+ "rn8": {
+  "mechanism": "Detect benchmark from bin capacity and switch to a dataset-specific scoring rule.",
+  "object": "dataset-dispatch scoring rule",
+  "key_move": "Branch heuristic on detected dataset identity.",
+  "kind": "construction",
+  "outcome": "refuted",
+  "killed_by": "G-ONLINE: branching on dataset identity",
+  "why": "Capacity-based dataset dispatch is explicitly forbidden.",
+  "family_hint": "dataset-identity dispatch"
+ },
+ "rn9": {
+  "mechanism": "Subtract a flat constant from the priority of every empty bin so a new bin opens only when no used bin fits.",
+  "object": "empty-bin priority penalty",
+  "key_move": "Root idea: flat deduction on unused bins.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no run recorded.",
+  "family_hint": "new-bin opening penalty"
+ },
+ "rn10": {
+  "mechanism": "Bar small items from bins with at least half capacity free unless no other bin fits, reserving room for large items.",
+  "object": "roomy-bin reservation rule",
+  "key_move": "Root idea: reserve half-empty bins for large items.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no run recorded.",
+  "family_hint": "capacity reservation for large items"
+ },
+ "eq1": {
+  "mechanism": "Priority = -r*(1+(r/20)^1.5) on residual r, penalising medium gaps super-linearly while keeping tight fits cheap.",
+  "object": "residual-gap penalty function",
+  "key_move": "Root idea: super-linear closed-form residual penalty.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no run recorded.",
+  "family_hint": "closed-form residual penalty"
+ },
+ "eq2": {
+  "mechanism": "Prefer exact fit, then smallest remaining gap, opening an empty bin only when no used bin fits: plain best fit.",
+  "object": "best-fit priority",
+  "key_move": "Root idea: exact-fit-first best fit baseline.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; equivalent to the best-fit baseline.",
+  "family_hint": "best-fit baseline"
+ },
+ "vs1": {
+  "mechanism": "Keep a KDE of item sizes on a fixed integer grid updated incrementally per item; bin fill probability becomes a table lookup.",
+  "object": "incremental KDE fill-probability grid",
+  "key_move": "Replace #27's per-bin pass over past items with an incremental grid lookup to fix runtime.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal targets #27's 212 s G-TIME failure; unmeasured.",
+  "family_hint": "online size-distribution fill probability"
+ },
+ "vs2": {
+  "mechanism": "Distil a trained MLP priority into a 32-entry lookup table over residual and item buckets for constant-time scoring.",
+  "object": "distilled MLP lookup table",
+  "key_move": "Replace #47's MLP evaluation with a distilled bucket table to cut runtime.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal targets #47's 94 s G-TIME failure; unmeasured.",
+  "family_hint": "learned neural priority"
+ },
+ "vs3": {
+  "mechanism": "OR3 step-table priority with break points scaled by the running median item size, adapting to the size distribution online.",
+  "object": "median-scaled residual step table",
+  "key_move": "Express step-table break points in running-median units instead of absolute units.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal targets step tables' Weibull regression; unmeasured.",
+  "family_hint": "residual step table"
+ },
+ "vs4": {
+  "mechanism": "Weibull polynomial priority plus a penalty when post-placement residual is below the smallest item seen so far.",
+  "object": "polynomial priority with fragment penalty",
+  "key_move": "Add unusable-fragment penalty to #16's polynomial to fix its OR3 loss.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal targets #16's OR3 loss from small gaps; unmeasured.",
+  "family_hint": "polynomial plus fragment penalty"
+ },
+ "vs5": {
+  "mechanism": "Compute two-item fill probability by FFT convolution of the observed size histogram, refreshed every 500 items.",
+  "object": "FFT-convolved size histogram",
+  "key_move": "Use FFT and periodic refresh instead of per-item recomputation to cut #65's runtime.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal targets #65's 71 s G-TIME failure; unmeasured.",
+  "family_hint": "online size-distribution fill probability"
+ },
+ "vs6": {
+  "mechanism": "CMA-ES-trained linear bin scorer with the OR3 step-table score added as a tenth feature for non-monotone gap preference.",
+  "object": "CMA-ES linear feature scorer",
+  "key_move": "Add #11 step-table score as a feature to #66's linear model.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal targets #66's 0.04 G-OR miss; unmeasured.",
+  "family_hint": "evolved linear feature scorer"
+ },
+ "vs7": {
+  "mechanism": "Fragment penalty plus OR3 step table for small items, switching to the Weibull polynomial for large items.",
+  "object": "size-split hybrid priority",
+  "key_move": "Route large items to #16's polynomial instead of #36's step table.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal targets #36's Weibull loss on large items; unmeasured.",
+  "family_hint": "hybrid step table and polynomial"
+ },
+ "vs8": {
+  "mechanism": "Closed-gap-fraction table per residual bucket with Bayesian shrinkage of each bucket toward the global closure rate.",
+  "object": "shrunk closed-gap-fraction table",
+  "key_move": "Add Bayesian shrinkage to #74's bucket estimates to reduce sparse-bucket noise.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal targets #74's G-WB miss from noisy buckets; unmeasured.",
+  "family_hint": "online gap-closure statistics"
+ },
+ "vn1": {
+  "mechanism": "KDE fill-probability priority using an Epanechnikov kernel of bandwidth 3 instead of Gaussian.",
+  "object": "KDE fill-probability kernel",
+  "key_move": "Swap #27's Gaussian kernel for Epanechnikov, bandwidth 3.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Parameter variant; does not address #27's runtime failure; unmeasured.",
+  "family_hint": "online size-distribution fill probability"
+ },
+ "vn2": {
+  "mechanism": "Weibull polynomial priority with first term (bins - mean(bins))^2 / item instead of using max residual.",
+  "object": "polynomial priority first term",
+  "key_move": "Replace max with mean bin residual in #16's first term.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Minor parameter variant of #16; unmeasured.",
+  "family_hint": "closed-form polynomial priority"
+ },
+ "vn3": {
+  "mechanism": "Harmonic-k size-class packing with 8 item classes instead of 6.",
+  "object": "Harmonic-k class count",
+  "key_move": "Change k from 6 to 8.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Parameter variant of Harmonic-k; unmeasured.",
+  "family_hint": "harmonic size-class packing"
+ },
+ "vn4": {
+  "mechanism": "MLP bin priority with three hidden layers of 8 units, trained by CMA-ES rather than OpenAI-ES.",
+  "object": "MLP priority network",
+  "key_move": "Deeper network and CMA-ES optimiser instead of OpenAI-ES.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Variant does not address #47's runtime failure; unmeasured.",
+  "family_hint": "learned neural priority"
+ },
+ "vn5": {
+  "mechanism": "OR3 residual step table with an extra step scoring residual r <= 1 as 5.",
+  "object": "residual step table",
+  "key_move": "Add one near-exact-fit step to the table.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Minor variant; does not address the table's Weibull regression; unmeasured.",
+  "family_hint": "residual step table"
+ },
+ "vn6": {
+  "mechanism": "Sample bins by softmax of priority with temperature annealed from 2 to 0.1 over the stream.",
+  "object": "softmax bin sampler temperature",
+  "key_move": "Decay softmax temperature over the item stream.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; unmeasured.",
+  "family_hint": "stochastic softmax bin selection"
+ },
+ "bf1": {
+  "mechanism": "Two-sided fill probability from an online size histogram, with Laplace add-one initialisation to avoid division by zero.",
+  "object": "online size histogram",
+  "key_move": "Fix #28's first-item ZeroDivisionError with Laplace counts; mechanism unchanged.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Bug-fix retry so #28's mechanism can be measured; unmeasured.",
+  "family_hint": "online size-distribution fill probability"
+ },
+ "bf2": {
+  "mechanism": "Percentile fragment penalty masking residuals below the 10th-percentile item size, with residual sign corrected to bins - item.",
+  "object": "percentile fragment threshold mask",
+  "key_move": "Fix #34's sign-flipped residual so the mask actually fires.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "#34 never exercised its mechanism; retry measures it as designed.",
+  "family_hint": "polynomial plus fragment penalty"
+ },
+ "bf3": {
+  "mechanism": "Replace singular features 1/r and item/r with 1/(r+0.5) and item/(r+0.5) so CMA-ES-tuned linear priority stays finite at exact fits.",
+  "object": "CMA-ES feature set of priority",
+  "key_move": "Regularise the divergent 1/r features by adding 0.5 to r, then rerun #45.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; fixes #45's infinite-feature collapse at r=0, no measurement recorded yet.",
+  "family_hint": "CMA-ES tuned feature weights"
+ },
+ "bf4": {
+  "mechanism": "Reset the adaptive module-level count table only at instance start, detected by all bins at full capacity, not on every priority call.",
+  "object": "adaptive per-instance count table",
+  "key_move": "Move the table reset from function entry to fresh-instance detection, then measure #75.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; repairs a bug that erased #75's adaptive statistics every call; no result yet.",
+  "family_hint": "adaptive size-count table"
+ },
+ "bu1": {
+  "mechanism": "Reimplement #28's two-sided fill-probability priority unchanged, assuming the earlier crash was an implementation slip.",
+  "object": "two-sided fill probability score",
+  "key_move": "Plain rerun of #28 with no diagnosed cause or change.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "No diagnosis of #28's failure; a repeat without a named fix adds nothing new.",
+  "family_hint": "fill-probability scoring"
+ },
+ "bu2": {
+  "mechanism": "Rerun #45's CMA-ES feature priority with cleaner code, attributing the collapse to a numerical glitch.",
+  "object": "CMA-ES feature set of priority",
+  "key_move": "Plain rerun of #45 without fixing the infinite 1/r features.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Ignores known cause (1/r infinite at r=0); bf3 names the actual fix.",
+  "family_hint": "CMA-ES tuned feature weights"
+ },
+ "bff1": {
+  "mechanism": "Correct Harmonic-4 class assignment to floor(C/item)-1 so boundary-size items fall in the right class, then measure.",
+  "object": "Harmonic-4 size-class boundaries",
+  "key_move": "Fix off-by-one class boundary so size-75 items land in class 2.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; bug fix enabling a fair Harmonic-4 measurement, not yet run.",
+  "family_hint": "harmonic size-class packing"
+ },
+ "lk1": {
+  "mechanism": "Track each bin's last-fill step and add to -r a bonus for longest-untouched bins so stale bins close first.",
+  "object": "per-bin last-update timestamp",
+  "key_move": "Add bin age (time since last item) bonus to best-fit score.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; tests whether bin staleness helps close gaps; no measurement.",
+  "family_hint": "bin age / recency bonus"
+ },
+ "lk2": {
+  "mechanism": "Sum-of-Squares: pick bin minimising sum over gap sizes of squared counts of open bins with that residual after placement.",
+  "object": "histogram of open-bin residual gaps",
+  "key_move": "Square counts of each gap size across bins rather than residuals.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; classic Csirik SS algorithm, not yet measured on OR3/Weibull.",
+  "family_hint": "sum-of-squares gap counts"
+ },
+ "lk3": {
+  "mechanism": "For each candidate bin, sample 30 future items from running size histogram, best-fit them, choose bin with fewest new bins opened.",
+  "object": "Monte Carlo rollouts from size histogram",
+  "key_move": "Simulate future from observed histogram instead of scoring gap closure analytically.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "G-TIME risk: rollouts per candidate on 5,000-item instances",
+  "why": "Proposal only; lookahead by simulation of past-distribution items; cost may threaten 60 s limit.",
+  "family_hint": "rollout lookahead simulation"
+ },
+ "lk4": {
+  "mechanism": "Every 1,000 items solve LP relaxation on prefix size histogram; score bins by dual values of sizes that can fill residual.",
+  "object": "LP dual prices on prefix histogram",
+  "key_move": "Replace L1-bound guidance with LP-relaxation dual prices from the prefix.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; dual-price guided placement, not yet measured.",
+  "family_hint": "prefix distribution learning"
+ },
+ "lk5": {
+  "mechanism": "Evaluate #11's step table with np.searchsorted over break points, removing per-bin Python loop while keeping scores identical.",
+  "object": "#11 step-table priority evaluation",
+  "key_move": "Vectorise table lookup; scores unchanged, only runtime reduced.",
+  "kind": "tooling",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Speed-only change; cannot alter excess, only G-TIME behaviour.",
+  "family_hint": "implementation speedup"
+ },
+ "lk6": {
+  "mechanism": "Use worst fit for the first 5% of the stream to diversify gap sizes, then switch to best fit.",
+  "object": "phase-switched fit rule",
+  "key_move": "Worst-fit warm-up phase before best fit.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; tests whether early gap diversity helps later packing.",
+  "family_hint": "phase-switched heuristic"
+ },
+ "lk7": {
+  "mechanism": "Use item minus previous item to predict a large next item and avoid filling residuals such an item would need.",
+  "object": "item-size stream differences",
+  "key_move": "Predict next item size from recent stream trend to reserve gaps.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; assumes serial correlation in sizes, likely absent in i.i.d. benchmark streams.",
+  "family_hint": "stream sequence prediction"
+ },
+ "lk8": {
+  "mechanism": "Penalise bins by variance of item sizes already inside, favouring homogeneous bins, with -r tie-break.",
+  "object": "per-bin content size variance",
+  "key_move": "Add content-homogeneity penalty to best-fit score.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no measurement recorded.",
+  "family_hint": "bin content composition features"
+ },
+ "lk9": {
+  "mechanism": "Place item in the bin the previous item went to when it fits, else best fit, exploiting runs of similar sizes.",
+  "object": "last-used bin",
+  "key_move": "Stickiness to previous item's bin before falling back to best fit.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; relies on size runs, likely absent in i.i.d. streams.",
+  "family_hint": "stream sequence prediction"
+ },
+ "lk10": {
+  "mechanism": "priority = -r - kappa * item count in bin, completing bins with few large items before bins of many small items.",
+  "object": "per-bin item count",
+  "key_move": "Add item-count penalty to best-fit score.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no measurement recorded.",
+  "family_hint": "bin content composition features"
+ },
+ "nv1": {
+  "mechanism": "Predict size frequencies from prefix, build offline profile of bin types, route arrivals into profile slots, opening new copies when full.",
+  "object": "learned bin-type profile",
+  "key_move": "Learning-augmented profile packing from predicted frequencies.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; profile packing from prefix-learned distribution, not yet measured.",
+  "family_hint": "prefix profile packing"
+ },
+ "nv2": {
+  "mechanism": "Bucket open bins into 10 gap classes; choose placement minimising value function on class-count vector fitted by value iteration on simulations.",
+  "object": "aggregated gap-class count state",
+  "key_move": "Approximate DP with fitted value function over gap-class counts.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; RL/ADP placement policy, unmeasured.",
+  "family_hint": "approximate dynamic programming"
+ },
+ "nv3": {
+  "mechanism": "UCB1 bandit per size bucket selects best fit, OR3 table or Weibull polynomial per arrival, rewarded by waste change vs running bound.",
+  "object": "per-bucket UCB1 heuristic selector",
+  "key_move": "Online bandit mixing of existing dataset-specialised heuristics.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "G-ONLINE risk if selection acts as dataset-identity branching",
+  "why": "Proposal only; adaptive portfolio selection among prior heuristics, unmeasured.",
+  "family_hint": "online heuristic portfolio selection"
+ },
+ "nv4": {
+  "mechanism": "Genetic programming over expression trees of r, item, bin age and gap-count features, bred on both datasets and symbolically simplified.",
+  "object": "priority expression trees",
+  "key_move": "GP search over expression trees with joint two-dataset fitness.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; generic evolved-formula search, unmeasured.",
+  "family_hint": "evolved priority formula search"
+ },
+ "pd1": {
+  "mechanism": "Every 1,000 items run FFD on prefix, use resulting bin types and proportions as template, steer placements to complete template bins, else best fit.",
+  "object": "FFD-derived bin-type template",
+  "key_move": "Profile template from offline FFD on prefix instead of predicted frequencies.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; prefix profile packing variant, unmeasured.",
+  "family_hint": "prefix profile packing"
+ },
+ "pd2": {
+  "mechanism": "Periodically re-run offline first-fit-decreasing on the items seen so far, extract frequent bin compositions, and route each arriving item into an open slot of the most-needed composition.",
+  "object": "FFD-derived bin composition template",
+  "key_move": "Root attempt: online routing toward compositions mined from offline FFD packing of the prefix.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only, with no run or excess numbers. It needs the item history, which priority(item, bins) may not expose, and its time cost is unmeasured.",
+  "family_hint": "offline-template guided routing"
+ },
+ "pd3": {
+  "mechanism": "After each tentative insertion, count bins that share each leftover capacity, sum the squared counts, and pick the insertion that minimises this total.",
+  "object": "multiset of bin residual capacities",
+  "key_move": "Root attempt: scores each placement by how concentrated the residual-capacity histogram becomes (sum of squared counts).",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no OR3 or Weibull excess was measured.",
+  "family_hint": "residual-distribution shaping score"
+ },
+ "pd4": {
+  "mechanism": "For each feasible bin, simulate a few dozen future arrivals sampled from the empirical size distribution with best-fit, and choose the bin whose simulations open the fewest new bins.",
+  "object": "Monte Carlo rollout per candidate bin",
+  "key_move": "Root attempt: lookahead by sampled rollouts from the observed size law rather than a static score.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only. G-TIME risk on 5,000-item instances is unmeasured, and the empirical size law needs history that priority(item, bins) may not have.",
+  "family_hint": "simulation rollout lookahead"
+ },
+ "pl1": {
+  "mechanism": "Among bins within 1 unit of the tightest fit, break ties by the placement that minimises the sum of squared residuals over all open bins.",
+  "object": "best-fit tie-break over open bins",
+  "key_move": "Root attempt: adds a global sum-of-squared-residuals tie-break inside a near-best-fit window.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no excess was measured on either set.",
+  "family_hint": "best-fit with residual tie-break"
+ },
+ "pl2": {
+  "mechanism": "Compute the L1 lower bound of the prefix to set a target fill per bin, and penalise bins whose post-placement fill exceeds the running average target by more than one item size.",
+  "object": "L1-bound-derived per-bin fill target",
+  "key_move": "Takes the target from the prefix L1 lower bound instead of from an offline packing template.",
+  "kind": "construction",
+  "outcome": "inconclusive",
+  "killed_by": "",
+  "why": "Proposal only; no excess was measured. Needs only total size so far, which can be computed from bin fills.",
+  "family_hint": "fill-target penalty scoring"
+ }
+}

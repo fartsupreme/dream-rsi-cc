@@ -230,9 +230,16 @@ def cmd_families(a) -> int:
     tree = camp.tree
     goal = cfg.get("goal", "")
     objective = (cfg.get("live") or {}).get("objective")
+    judge = make_llm(cfg, "judge")
+
+    def checker(text):  # a suggested direction is checked against the record before any worker sees it
+        from .novelty import check as novelty_check
+        fams_now = load_families(camp.families_path) if camp.families_path.exists() else {"families": []}
+        return novelty_check(camp.tree, fams_now, judge, text, goal=goal, plateau=cfg["search"]["plateau"],
+                             query_fp=True, confirm=False)
     if a.rebuild or not camp.families_path.exists():
         fams = rebuild_families(tree, llm, goal, camp.families_path, plateau=cfg["search"]["plateau"],
-                                objective=objective)
+                                objective=objective, checker=checker)
         assigned = sum(1 for n in camp.tree.nodes() if (n.get("fingerprint") or {}).get("family"))
         print(f"{len(fams['families']) - 1} families built; {assigned} attempts assigned")
     else:
@@ -240,7 +247,7 @@ def cmd_families(a) -> int:
         print(f"{n} new attempts assigned to existing families")
         if a.frontier:
             refresh_frontier(tree, llm, goal, camp.families_path, plateau=cfg["search"]["plateau"],
-                             objective=objective)
+                             objective=objective, checker=checker)
             print("frontier rebuilt")
     _write_map(camp)
     return 0
@@ -594,7 +601,7 @@ def cmd_gate(a) -> int:
                 when = calendar.timegm(_time.strptime(row.get("checked", ""), "%Y-%m-%dT%H:%M:%SZ"))
             except (json.JSONDecodeError, ValueError):
                 continue
-            if row.get("verdict") in ("novel", "variant") and now - when <= a.max_age_hours * 3600:
+            if row.get("verdict") in ("novel", "variant", "retry") and now - when <= a.max_age_hours * 3600:
                 ok = True
     if not ok:
         print(f"drsi gate: no passing novelty check in the last {a.max_age_hours:g}h for campaign "
@@ -651,7 +658,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = with_c(sub.add_parser("map", help="print (and rewrite) the search map"))
     s.set_defaults(fn=cmd_map)
 
-    s = with_c(sub.add_parser("check", help="novelty check a proposal; exit 0 novel, 3 variant, 4 duplicate"))
+    s = with_c(sub.add_parser("check", help="novelty check a proposal; exit 0 novel, 3 variant, 4 duplicate, 5 off target, 6 retry"))
     s.add_argument("proposal", nargs="*")
     s.add_argument("--file")
     s.add_argument("--json", action="store_true")

@@ -123,11 +123,13 @@ def _file_lock(path: Path, enabled: bool = True):
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
-def live_outcome(node: dict, reference: float | None) -> tuple[str, str]:
-    """Outcome from the scorer, never from the worker's report."""
+def live_outcome(node: dict, reference: float | None, margin: float = 0.0) -> tuple[str, str]:
+    """Outcome from the scorer, never from the worker's report. A pass must beat the reference (the parent's
+    score, else the baseline) by more than `margin` (live.pass_margin): a re-measurement of the same code lands
+    above its parent about half the time."""
     if not node["valid"]:
         return ("inconclusive" if node["fail_class"] in PROCEDURAL else "killed"), node["fail_class"] or "invalid"
-    if reference is None or node["score"] > reference:
+    if reference is None or node["score"] > reference + margin:
         return "pass", ""
     return "measured", ""
 
@@ -165,6 +167,7 @@ class LiveRunner:
         self.objective = objective  # what the scorer measures, when it is narrower than the goal
         self.default_model = cfg["llm"].get("worker_model") or cfg["llm"]["model"]
         self._models: dict[str, str | None] = {}
+        self._batches = 0  # model slots rotate by one each batch, so no model always gets the last-ranked cell
         self.ids: list[str] = []
         self._seq = 0
         self._git_lock = threading.Lock()
@@ -238,8 +241,9 @@ class LiveRunner:
             frontier = fams.get("frontier") or []
             if branch < len(frontier):  # each suggestion to one branch of a round; the rest choose from the map
                 d = frontier[branch]
+                near = f" (nearest tried: {', '.join('#' + str(i) for i in d['near'])})" if d.get("near") else ""
                 parts.append(f"Suggested untried direction for this branch (unverified; use it or beat it): "
-                             f"{d['direction']}")
+                             f"{d['direction']}{near}")
             parts.append("")
         return parts
 
@@ -257,7 +261,10 @@ class LiveRunner:
                   f"nearest attempts) to {self.proposal_file(node_id)}, and put the same text in the report's "
                   "proposal field. Do not implement anything yet: the orchestrator checks the proposal against "
                   "everything tried first."]
-        if feedback:
+        if feedback and feedback.startswith("VERDICT: OFF_TARGET"):
+            parts += ["", "YOUR PREVIOUS PROPOSAL DOES NOT TARGET WHAT STOPPED ITS FAMILY. The check said:", feedback,
+                      "Aim the difference at that stopper, or propose a different mechanism."]
+        elif feedback:
             parts += ["", "YOUR PREVIOUS PROPOSAL REPEATS HISTORY. The check said:", feedback,
                       "Propose a different mechanism."]
         return "\n".join(parts)
@@ -322,10 +329,10 @@ class LiveRunner:
                             ok=False, error="the worker wrote no proposal"), None, checks, no_commit=start)
                     check = self.checker(proposal, nid)
                     checks.append({k: check.get(k) for k in ("verdict", "ticket", "rule", "family", "rationale")})
-                    if check["verdict"] != "duplicate":
+                    if check["verdict"] not in ("duplicate", "off_target"):
                         break
                     feedback = render_check(check)
-                if check["verdict"] == "duplicate":
+                if check["verdict"] in ("duplicate", "off_target"):
                     return self._finish(job, AgentResult(ok=True), check, checks, not_novel=True, no_commit=start)
             res = self._call(path, self.brief_implement(nid, parent, branch, path, check, map_text), nid)
             return self._finish(job, res, check, checks)
@@ -387,7 +394,7 @@ class LiveRunner:
             with self._git_lock:
                 self.ws.remove(path)
         ref = parent["score"] if parent and parent.get("valid") else cfg.get("baseline")
-        outcome, killed_by = live_outcome(dict(fields), ref)
+        outcome, killed_by = live_outcome(dict(fields), ref, float(cfg["live"].get("pass_margin", 0.0)))
         return make_node(
             id=nid, parent=parent_id, source="live", proposal=_clip(proposal, 8000),
             fingerprint={"outcome": outcome, "killed_by": killed_by},
@@ -424,11 +431,12 @@ class LiveRunner:
         tree = self.camp.tree
         map_text = write_map(self.camp)  # once per batch: every worker in it sees the same map
         slots = []  # per cell, in order: its job, or the node recorded when its setup failed
+        turn, self._batches = self._batches, self._batches + 1
         for slot, cell in enumerate(cells):
             self._seq += 1
             nid = f"{self.round_id}-{self._seq:03d}"
             if self.worker_models:
-                self._models[nid] = self.worker_models[slot % len(self.worker_models)]
+                self._models[nid] = self.worker_models[(slot + turn) % len(self.worker_models)]
             if cell.startswith(ROOT):
                 parent_id, parent_commit, branch = None, None, int(cell[len(ROOT):])
             else:
