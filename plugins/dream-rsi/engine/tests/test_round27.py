@@ -14,9 +14,19 @@ The review of round 26 (Opus) found a live round ran policies at hash seed 0, th
 reading the seed through set iteration order acted honestly in every check and made no attempt live. Every policy
 process now runs at POLICY_HASH_SEED, and the second replay run's other seed catches any behaviour keyed to it.
 
+The review of round 27 (Opus) found two more. Replay ran every (beta, world) in one process, where a live round runs
+one: a policy wrote a class attribute through an unbound helper call, counted its runs, and stopped on its first
+(always the case live) while behaving well after it; every replay run now has a process of its own. And a run that
+ended at the record was charged its leftover budget as full-width empty batches, where live the same policy might
+spend it in narrow batches that score worse; an ended run's leftover probes now count one empty batch each (no live
+continuation can fill less), and in the batch that ends the record its recorded cells are credited after the probes
+the record could not answer. So a replayed run's reward never exceeds what the same policy earns live on the same
+attempts, measured by the same world.
+
 Novelty check: a citation of an attempt's own id (not the label it was shown under) resolved through the flattened
-labels, so the fullwidth "Ａ7" reached "A7", and an id longer than its label reached nothing; an exact id is now
-matched before the labels, and the judge is told to cite by the label.
+labels, so the fullwidth "Ａ7" reached "A7", and an id longer than its label reached nothing. A citation is read as a
+label first (the judge sees only labels and is told to cite by them), then as an attempt's own id exactly, and only
+then flattened.
 """
 import tempfile
 import unittest
@@ -103,8 +113,8 @@ class EndOfRecordTest(unittest.TestCase):
     def test_the_rest_of_the_budget_counts_as_empty_batches(self):
         rep = evaluate_policy(SEED_POLICY, [chain_world(2, 2)], **KW)
         row = rep["measured"]["runs"][str(float(rep["default_beta"]))][0]
-        self.assertEqual((row["probes"], row["unspent"]), (4, 2))
-        self.assertAlmostEqual(rep["parallel_penalty"], live_penalty([4], 4, 2))
+        self.assertEqual((row["probes"], row["unspent"]), (4, 8))  # eight probes left: eight empty batches
+        self.assertAlmostEqual(rep["parallel_penalty"], live_penalty([4], 4, 8))
 
     def test_the_oracle_cannot_switch_on_what_replay_made_up(self):
         worlds = [chain_world(3, 6) for _ in range(4)]
@@ -246,6 +256,138 @@ class HashSeedTest(unittest.TestCase):
         rep = evaluate_policy(self.keyed(POLICY_HASH_SEED), [chain_world(6, 3)], W=2, betas=[], budget=4, lam=0.25,
                               beta1=0.01, beta2=0.01)
         self.assertEqual((rep["ok"], rep.get("stage")), (False, "determinism"), rep)
+
+
+COUNTER = """    # EVOLVE-BLOCK-START
+    def note(self, n):
+        self.runs_seen = n
+
+    def select_batch(self, question, closed, state):
+        if "run" not in state:
+            try:
+                seen = LLMDesignedMethod.runs_seen
+            except Exception:
+                seen = 0
+            OptimalPolicy.note(LLMDesignedMethod, seen + 1)
+            state["run"] = seen + 1
+        if state["run"] == 1:
+            return []
+        return question.legal_roots()[:question.max_parallelism]
+    # EVOLVE-BLOCK-END
+"""
+
+# a full batch of roots, then one cell at a time
+FULL_THEN_SERIAL = """    # EVOLVE-BLOCK-START
+    def select_batch(self, question, closed, state):
+        W = question.max_parallelism
+        if question.rounds == 0:
+            return question.legal_roots()[:W]
+        obs = question.observed()
+        leaves = [c for c in question.legal_actions() if not c.startswith("root:")]
+        leaves.sort(key=lambda c: (obs[c].score if obs[c].score is not None else -1.0, c), reverse=True)
+        return leaves[:1] or question.legal_roots()[:1]
+    # EVOLVE-BLOCK-END
+"""
+
+
+# the review's pair: the recorder opens 8 roots and continues each once; the candidate does the same, then goes on one
+# cell at a time down its best leaf, past the record
+EIGHT = """    # EVOLVE-BLOCK-START
+    def select_batch(self, question, closed, state):
+        W = question.max_parallelism
+        obs = question.observed()
+        if len([o for o in obs.values() if o.parent_id is None]) < 8:
+            return question.legal_roots()[:W]
+        firsts = [c for c in question.legal_actions() if not c.startswith("root:") and obs[c].parent_id is None]
+        if firsts or STOP:
+            return sorted(firsts)[:W]
+        leaves = [c for c in question.legal_actions() if not c.startswith("root:")]
+        leaves.sort(key=lambda c: (obs[c].score if obs[c].score is not None else -1.0, c), reverse=True)
+        return leaves[:1]
+    # EVOLVE-BLOCK-END
+"""
+EIGHT_REC, EIGHT_ON = EIGHT.replace("STOP", "True"), EIGHT.replace("STOP", "False")
+
+
+def failing_deep(i):
+    """Ground truth whose attempts two or more steps down a branch all fail."""
+    w = truth_world(i)
+    for n in w["nodes"]:
+        if not n["id"].endswith(("d0", "d1")):
+            n.update(score=None, valid=False, fail_class="eval_error")
+    return w
+
+
+class ProcessTest(unittest.TestCase):
+    def test_every_replay_run_has_a_process_of_its_own(self):
+        with tempfile.TemporaryDirectory() as d:
+            pol = write(d, "counter.py", with_block(COUNTER)(SEED_POLICY.read_text()))
+            rep = evaluate_policy(pol, [chain_world(3, 3) for _ in range(3)], W=2, betas=[0.0, 1.0], budget=4,
+                                  lam=0.25, beta1=0.01, beta2=0.01)
+            self.assertTrue(rep["ok"], rep)
+            traces = [row["trace"] for rows in rep["traces"]["runs"].values() for row in rows]
+            self.assertEqual(traces, [[]] * len(traces))  # every run is the first in its process, as live
+
+
+class LowerBoundTest(unittest.TestCase):
+    def test_the_batch_that_ends_the_record_credits_its_recorded_cells_last(self):
+        from drsi.replay import _replay_traces
+        world = {"id": "w", "baseline": 0.0, "nodes": [{"id": "a", "parent": None, "score": 1.0, "valid": True}]}
+        raw = {"default_beta": 0.6, "runs": {"0.6": [{"trace": [["root:0", "root:1"]]}]}}
+        row = _replay_traces(raw, [world], 2, 4)["runs"]["0.6"][0]
+        self.assertEqual(row["curve_canonical"], [[2, 1.0]])
+        self.assertEqual(row["unspent"], 2)  # two probes left: two empty batches
+
+    def test_replay_reward_never_exceeds_live_reward_on_the_same_attempts(self):
+        from drsi.replay import _aggregate
+        kw = dict(W=4, betas=[], budget=24, lam=0.25, beta1=0.01, beta2=0.01)
+        with tempfile.TemporaryDirectory() as d:
+            for recorder in (EIGHT_REC, WORST_FIRST):
+                rec = write(d, "rec.py", with_block(recorder)(SEED_POLICY.read_text()))
+                for block in (EIGHT_ON, FULL_THEN_SERIAL, BEST_FIRST, ALLROOTS, ORACLE, WORST_FIRST, None):
+                    pol = write(d, "p.py",
+                                with_block(block)(SEED_POLICY.read_text()) if block else SEED_POLICY.read_text())
+                    for i, truth in enumerate([truth_world(0), failing_deep(1), truth_world(2, plateau=True)]):
+                        recorded = record(rec, truth, 4, 24, "iter0001")
+                        replayed = evaluate_policy(pol, [recorded], **kw)
+                        live = evaluate_policy(pol, [truth], **kw)
+                        live_reward = _aggregate(live["measured"], [recorded], 4, 0.25, 0.01, 0.01)["reward"]
+                        self.assertLessEqual(replayed["reward"], live_reward + 1e-12,
+                                             (recorder[40:90], (block or "seed")[40:90], i))
+
+
+class OptionsTest(unittest.TestCase):
+    def test_ranking_options_without_the_guarantee_warn(self):
+        from drsi.dream import config_warnings
+        base = {"search": {"W": 2, "K1": 4}, "dream": {"betas": [0.0], "lambda": 0.25, "beta1": 0.01, "beta2": 0.01}}
+        self.assertEqual(config_warnings(base), [])
+        for key, value in (("score", "sweep"), ("curve", "reveal"), ("curve", "batch"), ("curve", "clock")):
+            ws = config_warnings(base | {"dream": base["dream"] | {key: value}})
+            self.assertTrue(any("only under the defaults" in w for w in ws), (key, value, ws))
+
+
+class LabelFirstTest(unittest.TestCase):
+    def test_a_citation_that_is_one_attempts_label_and_anothers_id_means_the_label(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = Tree(Path(d) / "tree.jsonl")
+            for nid, mech, outcome, killed in (
+                    ("A7", "widget merge variant one", "inconclusive", "an index bug crashed it before any measurement"),
+                    ("\uff217", "widget merge variant two", "refuted", "speed")):
+                t.add(make_node(id=nid, parent=None, proposal=mech,
+                                fingerprint={"mechanism": mech, "object": "o", "key_move": "k", "kind": "construction",
+                                             "outcome": outcome, "killed_by": killed, "why": "w", "family": "F03"}))
+            seen = []
+
+            def fn(prompt, schema):
+                line = next(ln for ln in prompt.splitlines() if "variant two" in ln and ln.startswith("#"))
+                seen.append(line.split()[0])
+                return {"verdict": "retry", "retry_of": "A7", "nearest_ids": ["A7"], "family": "F03",
+                        "what_differs": "fixes the crash", "addresses_stopper": True, "targets_gate": "",
+                        "doubts": "", "rationale": "r"}
+            # the proposal reads like the fullwidth attempt, so it is shown first and takes the plain label "A7"
+            r = check(t, FAMS, ScriptedLLM(fn), "widget merge variant two, with the crash fixed")
+            self.assertEqual(seen, ["#A7"])
+            self.assertEqual([b["id"] for b in r["nearest"]], ["\uff217"])
 
 
 if __name__ == "__main__":

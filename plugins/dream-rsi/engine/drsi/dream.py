@@ -96,6 +96,10 @@ def config_warnings(cfg: dict) -> list[str]:
         v = d.get(key, default)
         if v not in allowed:
             out.append(f"dream.{key} = {v!r} is not one of {', '.join(allowed)}; ranking by {default!r}")
+        elif v != default:
+            out.append(f"dream.{key} = {v!r}: a deployed revision is shown to do better live on the same attempts only "
+                       f"under the defaults (score 'default', curve 'canonical'); {v!r} can reward behaviour a live "
+                       "round never shows (betas that never run, or the order a batch is listed in)")
     return out
 
 
