@@ -228,13 +228,39 @@ class QuestionBase:
         raise NotImplementedError
 
 
+def _unambiguous(nodes: list[dict]) -> list[dict]:
+    """Recorded ids share one namespace with root-slot cells ("root:<j>"). An id that looks like a slot (an imported
+    ledger's, say) is renamed here, with its children's parent and cell, so a slot and an attempt are never the same
+    cell; recorded ids never reach a policy, so nothing it sees changes."""
+    ids = {str(n["id"]) for n in nodes}
+    ren: dict[str, str] = {}
+    for i in sorted(ids):
+        if i.startswith(ROOT):
+            new = "node:" + i
+            while new in ids or new in ren.values():
+                new = "node:" + new
+            ren[i] = new
+    if not ren:
+        return nodes
+    out = []
+    for n in nodes:
+        m = dict(n, id=ren.get(str(n["id"]), n["id"]))
+        p = n.get("parent")
+        if p is not None and str(p) in ren:
+            m["parent"] = ren[str(p)]
+            if n.get("cell") == p:  # opened from that parent (a root's own cell is its slot and stays)
+                m["cell"] = ren[str(p)]
+        out.append(m)
+    return out
+
+
 class ReplayQuestion(QuestionBase):
     """A frozen discovery tree used as a zero-cost simulator. Its public surface is the live question's: anything
     only replay could answer would let a policy act differently in replay than live."""
 
     def __init__(self, world: dict, max_parallelism: int, max_probes: int | None = None):
         self._world = world
-        nodes = world["nodes"]
+        nodes = _unambiguous(world["nodes"])
         self._rec = {str(n["id"]): n for n in nodes}
         self._kids: dict[str | None, list[str]] = {}
         for n in nodes:

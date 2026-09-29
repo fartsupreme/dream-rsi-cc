@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -30,19 +31,20 @@ ENGINE_DIR = Path(__file__).resolve().parents[1]
 RUNNER = Path(__file__).resolve().parent / "replay_runner.py"
 
 
-def _run_once(job: dict, workdir: Path, seed: int, timeout: int) -> dict:
+def _run_once(job: dict, workdir: Path, seed: int, timeout: float, deadline: float | None = None) -> dict:
     """The policy's trace on every (beta, world) of the job, each run in a process of its own (a live round runs one
     policy per process, so a run must not see what an earlier run left in its process). The default beta is added to
     the job's betas; at it the policy is built with no argument, as live. Each run has the timeout (the work of a job
-    grows with its worlds, and one deadline for all of them would fail a policy only for the size of the pool), the
-    first failure ends the job, and the processes run in sessions of their own, registered with the run's children,
-    so an interrupt or `drsi stop` kills every one."""
+    grows with its worlds, and one deadline for all of them would fail a policy only for the size of the pool); a
+    deadline (time.monotonic()), when given, bounds them all as well. The first failure ends the job, and the
+    processes run in sessions of their own, registered with the run's children, so an interrupt or `drsi stop` kills
+    every one."""
     base = {"policy": job["policy"], "W": job["W"], "budget": job["budget"]}
     running = _Runs()
     results: dict = {}
     pool = None
     try:
-        info = _spawn(base | {"world": None}, workdir, f"{seed}-describe", seed, timeout, running)
+        info = _spawn(base | {"world": None}, workdir, f"{seed}-describe", seed, timeout, deadline, running)
         if not info.get("ok"):
             return info
         default = info["default_beta"]
@@ -50,7 +52,8 @@ def _run_once(job: dict, workdir: Path, seed: int, timeout: int) -> dict:
         tasks = [(b, i) for b in betas for i in range(len(job["worlds"]))]
         pool = ThreadPoolExecutor(max_workers=max(1, min(4, len(tasks))))
         futures = {pool.submit(_spawn, base | {"world": job["worlds"][i], "beta": None if b == default else b},
-                               workdir, f"{seed}-{b}-{i}", seed, timeout, running): (b, i) for b, i in tasks}
+                               workdir, f"{seed}-{b}-{i}", seed, timeout, deadline, running): (b, i)
+                   for b, i in tasks}
         for fut in as_completed(futures):
             r = fut.result()
             if not r.get("ok"):
@@ -98,7 +101,11 @@ class _Runs:
             _killpg(proc)
 
 
-def _spawn(job: dict, workdir: Path, tag: str, seed: int, timeout: float, running: _Runs) -> dict:
+def _spawn(job: dict, workdir: Path, tag: str, seed: int, timeout: float, deadline: float | None,
+           running: _Runs) -> dict:
+    limit = timeout if deadline is None else min(timeout, deadline - time.monotonic())
+    if limit <= 0:
+        return {"ok": False, "error": "timeout: the evaluation's time limit ran out"}
     out = workdir / f"result-{tag}.json"
     job_path = workdir / f"job-{tag}.json"
     job_path.write_text(json.dumps(job | {"out": str(out)}))
@@ -109,11 +116,12 @@ def _spawn(job: dict, workdir: Path, tag: str, seed: int, timeout: float, runnin
         return {"ok": False, "error": "the evaluation has stopped"}
     try:
         try:
-            _, err = proc.communicate(timeout=timeout)
+            _, err = proc.communicate(timeout=limit)
         except subprocess.TimeoutExpired:
             _killpg(proc)
             proc.communicate()
-            return {"ok": False, "error": f"timeout: a replay run took over {timeout:g} s"}
+            return {"ok": False, "error": f"timeout: a replay run took over {timeout:g} s" if limit == timeout
+                    else "timeout: the evaluation's time limit ran out"}
     finally:
         if proc.poll() is None:  # an interrupt, here or in the caller's thread: the run dies with the evaluation
             _killpg(proc)
@@ -232,9 +240,9 @@ def resampled_reward(measured: dict, worlds: list[dict], idx: list[int], W: int,
 
 def evaluate_policy(policy_path, worlds: list[dict], W: int, betas, budget, lam: float, beta1: float,
                     beta2: float, timeout: int = 120, score: str = "default", penalty: str = "live",
-                    curve: str = "canonical") -> dict:
+                    curve: str = "canonical", total_timeout: float | None = None) -> dict:
     """budget: probes per world, K1 x W as a live round has; required, since without one the recorded roots cap a
-    run, which no live round has."""
+    run, which no live round has. timeout bounds each replay run; total_timeout, when given, the whole evaluation."""
     if budget is None:
         raise ValueError("evaluate_policy needs a budget (K1 x W): replay ranks a policy as a live round runs it")
     _ranking(score, penalty, curve)
@@ -242,13 +250,14 @@ def evaluate_policy(policy_path, worlds: list[dict], W: int, betas, budget, lam:
     problems = check_policy_source(policy_path.read_text())
     if problems:
         return {"ok": False, "stage": "guard", "problems": problems, "error": "; ".join(problems)}
+    deadline = None if total_timeout is None else time.monotonic() + total_timeout
     with tempfile.TemporaryDirectory() as d:
         job = {"policy": str(policy_path), "worlds": worlds, "W": W,
                "betas": [float(b) for b in betas], "budget": budget}
-        first = _run_once(job, Path(d), POLICY_HASH_SEED, timeout)  # the seed a live round runs at
+        first = _run_once(job, Path(d), POLICY_HASH_SEED, timeout, deadline)  # the seed a live round runs at
         if not first.get("ok"):
             return {"ok": False, "stage": "run", "error": first.get("error", "unknown failure")}
-        second = _run_once(job, Path(d), POLICY_HASH_SEED + 1, timeout)  # any seed-keyed behaviour shows here
+        second = _run_once(job, Path(d), POLICY_HASH_SEED + 1, timeout, deadline)  # seed-keyed behaviour shows here
         if not second.get("ok"):
             return {"ok": False, "stage": "run", "error": second.get("error", "unknown failure")}
     if first != second:

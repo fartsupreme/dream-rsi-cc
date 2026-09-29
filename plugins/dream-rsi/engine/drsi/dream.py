@@ -75,6 +75,10 @@ def block_problems(block: str) -> list[str]:
     return out
 
 
+REVISION_FLOOR_S = 120  # a revision's evaluation may take REVISION_SLOWDOWN x the incumbent's, and at least this
+REVISION_SLOWDOWN = 4
+
+
 def _params(cfg: dict) -> dict:
     """The replay ranking a campaign's config asks for. The parallel penalty is always live fill: a campaign created
     while "support" was the default (or set to "realized") still stores it, and ranks by "live" (see config_warnings)."""
@@ -304,8 +308,10 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     inc_src = method.read_text()
     worlds_total, on_record = len(worlds), None
     worlds = [w for w in worlds if w.get("live", True)]  # the history world was never a live round of any policy
+    started = time.monotonic()
     inc = evaluate_policy(method, worlds, **params) if worlds else {"ok": True, "reward": float("-inf"), "measured": {
         "runs": {}}, "default_beta": 0.0}
+    inc_time = time.monotonic() - started
     if inc.get("ok"):
         # Replay is what happened only where the record answers. Where the incumbent's replay stays on the record
         # (every round it recorded itself, and any other whose record covers its whole path) its value is exact, and
@@ -316,7 +322,9 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
         worlds = [w for w, row in zip(worlds, rows) if row["off_record"] == 0]
         on_record = len(worlds)
         if worlds and on_record < worlds_total:
+            started = time.monotonic()
             inc = evaluate_policy(method, worlds, **params)
+            inc_time = time.monotonic() - started
     inc_reward = inc["reward"] if inc.get("ok") else float("-inf")
     best_src, best_rep, best_reward = inc_src, inc, inc_reward
     inc_parts = split_evolve(inc_src)
@@ -359,7 +367,8 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
             continue
         cand = candidates / f"{stamp}_m{m}.py"
         cand.write_text(new_src)
-        rep = evaluate_policy(cand, worlds, **params)
+        # the loop waits for the dream: a revision gets a few times the incumbent's own time, never less than the floor
+        rep = evaluate_policy(cand, worlds, **params, total_timeout=max(REVISION_FLOOR_S, REVISION_SLOWDOWN * inc_time))
         if not rep.get("ok"):
             revisions.append({"m": m, "stage": rep.get("stage", "run"), "error": rep.get("error", ""),
                               "path": str(cand)})
