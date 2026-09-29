@@ -118,10 +118,13 @@ expect a campaign's first rounds to find its loopholes.
   and no repeated attempt, and to
   a retry only by naming the exact attempt, an unmeasured one, and the located fix. A duplicate that a rule made (a
   variant with no difference, a retry of an attempt not shown or barred) is final and not sent to it.
+  Every attempt and in-flight proposal the judge sees carries a label of its own, so ids that flatten alike still
+  lead a citation to the record it names, and a "difference" must hold a visible letter or digit.
   On a planted test set (88 recorded attempts, 65 labelled probes, a real judge) this took non-repeats wrongly made
-  final duplicates from 3 of 28 to 0 and true repeats let through from 1 of 37 to 0, in each of three runs of the last
-  three versions of the check; one or two variants not aimed at a stopper were sent back as off target. The judge
-  varies between runs (an earlier version let 1 through).
+  final duplicates from 3 of 28 to 0 in each of five runs of the last versions of the check; true repeats let through
+  went from 1 of 37 to 0 or 1, as the judge varies between runs (twice a first judge took a schedule tweak or a
+  constant change for a variant aimed at the stopper). One or two variants not aimed at a stopper were sent back
+  as off target.
   The worktree is deleted and recreated after proposing, so nothing a worker does then survives. An attempt
   that never passes the check owns no code, so nothing unchecked can reach its descendants. The
   check can't be skipped or forged, and the proposal recorded is the one that was judged. Parallel attempts
@@ -187,13 +190,14 @@ expect a campaign's first rounds to find its loopholes.
 
 ## Choices the paper leaves open (made here, all configurable)
 
-- **Replay:** a leaf reveals its first recorded child, and a leaf with no recorded child reveals nothing
-  and is exhausted. Only leaves and root slots are actions (A(T) = {r} ∪ leaves), so siblings under an
-  interior node are unreachable in replay. A world's target and its work normalisation are therefore
-  computed over reachable attempts only. Root slots never run out, as live: a slot past the recorded roots reveals
-  nothing, as a leaf past its recorded branch does, since replay can value only what was recorded, in breadth and in
-  depth alike. Every probe costs budget, revealing or not (live, every probe is an attempt). With no budget the
-  recorded roots are the limit, so a run that explores until nothing is legal still ends.
+- **Replay:** a leaf reveals its first recorded child. Only leaves and root slots are actions
+  (A(T) = {r} ∪ leaves), so siblings under an interior node are unreachable in replay. A world's target and its work
+  normalisation are therefore computed over reachable attempts only. Replay shows a policy exactly what a live round
+  would: root slots never run out, and past the record (a root slot beyond the recorded roots, a leaf beyond the end
+  of its recorded branch) a probe reveals a failed attempt, with no score and the world's usual failure class, which
+  can be continued like any other. Replay can value only what was recorded, in breadth and in depth alike, and
+  nothing a policy can observe tells it where the record ends. The question object exposes only what the live one
+  does. Ranking always runs under a budget (K1 × W probes per world, as a live round).
 - **Reward:** the paper states Eq. 1 `V = max s_v − β1·N + β2·N/max(1,k)` in its method section but ranks
   policies by `pareto.auc − λ · parallel_penalty` over a beta sweep in the prompt it ran (Appendix B.2); the two
   disagree. Here Eq. 1 (with attainment for s_v, β1 = β2 = 0.01) is reported, and policies are ranked by an
@@ -205,8 +209,9 @@ expect a campaign's first rounds to find its loopholes.
     stops before its budget counts each batch it left as empty, so stopping never escapes the charge an under-filled
     continuation pays. Rounds 19 to 23 measured fill against what the record could answer and capped root slots at
     the recorded roots; three reviews found revisions that gained in replay only through that cap (stopping after
-    the roots, dropping the plateau rule, opening every root first), and each patch for one was bypassed by the next.
-    Counting as live counts removes the cap they all used (`dream.penalty = "support"` keeps the older rule).
+    the roots, dropping the plateau rule, opening every root first), and a fourth found one that waited for a probe
+    to come back empty. Replay that looks exactly like live removes what they all used. The older penalties are
+    gone: a campaign whose `dream.penalty` still says `"support"` or `"realized"` ranks by `"live"` and warns.
   - The cells of one batch are credited in a fixed order: they run in parallel live, so listing order earns
     nothing.
   - Reaching good attempts sooner scores higher even when every run explores the whole world.
@@ -219,7 +224,8 @@ expect a campaign's first rounds to find its loopholes.
   A tie keeps the incumbent, and so does an
   incumbent that fails replay (nothing can be compared with it; no revision is asked for). No dream runs until
   `dream.min_worlds` (default 4) worlds can separate policies (a valid score and at least one continuation).
-  The old ranking stays available as `dream.score = "sweep"`, `dream.penalty = "realized"`, `dream.curve = "reveal"`.
+  The old ranking's score and curve stay available as `dream.score = "sweep"` and `dream.curve = "reveal"`;
+  `drsi replay` ranks exactly as the dream step does.
 - **Parallel attempts:** the orchestrator's checks within a round are two-phase claims. Each claim is
   recorded under a lock and then judged without the lock, so checks run concurrently, but each one sees every
   claim before it. Claims from an interrupted earlier round are not treated as in flight.

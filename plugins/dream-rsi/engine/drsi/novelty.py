@@ -119,10 +119,21 @@ def _flat(text, cap: int) -> str:
     return re.sub(r"<{3,}|>{3,}", lambda m: m.group(0)[:2], " ".join(t.split()))[:cap]
 
 
-def _record(node: dict) -> str:
+# Characters that are letters to Unicode but print as nothing (Hangul fillers, the halfwidth one folding to U+3164):
+# a "difference" made of them, or of spaces, format characters and blank symbols (U+2800), states nothing.
+BLANK_LETTERS = {"\u115f", "\u1160", "\u3164", "\uffa0"}
+
+
+def _says_something(text) -> bool:
+    """True when the text holds at least one visible letter or digit."""
+    t = unicodedata.normalize("NFKC", str(text or ""))
+    return any(unicodedata.category(ch)[0] in "LN" and ch not in BLANK_LETTERS for ch in t)
+
+
+def _record(node: dict, label: str | None = None) -> str:
     t = node.get("text") or {}
     fp = node.get("fingerprint") or {}
-    lines = [f"[#{_flat(node['id'], 80)}]", f"proposal: {_flat(node.get('proposal', ''), 2000)}"]
+    lines = [f"[#{label or _flat(node['id'], 80)}]", f"proposal: {_flat(node.get('proposal', ''), 2000)}"]
     for key in ("candidate", "construction", "falsifiable", "verdict", "summary", "notes"):
         if t.get(key):
             lines.append(f"{key}: {_flat(t[key], 1200)}")
@@ -240,16 +251,51 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
                 family_members.append(tree.get(mid))
                 shown.add(mid)
 
+    # Every attempt and in-flight proposal the judge sees gets a label of its own: flattening can make two ids read
+    # alike (a width variant, a format character, a long id), and a citation must reach the record it names.
+    labels: dict[str, tuple[str, str]] = {}  # label -> ("tree", attempt id) or ("pending", label)
+    claims: dict[str, dict] = {}  # in-flight label -> claim
+
+    def new_label(base: str) -> str:
+        lab, n = base or "?", 1
+        while lab in labels:
+            n += 1
+            lab = f"{base or '?'}~{n}"
+        return lab
+    tree_label: dict[str, str] = {}
+    for h in hits + family_members:
+        if h["id"] not in tree_label:
+            tree_label[h["id"]] = lab = new_label(_flat(h["id"], 72))
+            labels[lab] = ("tree", h["id"])
+    for pc in pending:
+        lab = new_label(f"pending:{_flat(pc.get('node') or pc.get('ticket') or '?', 72)}")
+        labels[lab] = ("pending", lab)
+        claims[lab] = pc
+
+    def resolve(cite, loose: bool = False) -> tuple[str, str] | None:
+        """The attempt or in-flight proposal a citation names, by its label; loose also reads a label followed by
+        words ("#3 (radix merge)")."""
+        c = _flat(cite, 200).strip().lstrip("#").strip("[]").lstrip("#")
+        keys = [c, c.rstrip(".,;:)")] + ([c.split()[0].rstrip(".,;:)")] if loose and c.split() else [])
+        for k in keys:
+            hit = labels.get(k) or labels.get(f"pending:{k}")
+            if hit:
+                return hit
+        return None
+
+    def line(h) -> str:
+        return _line(_brief(h) | {"id": tree_label[h["id"]]})
+
     table = "\n".join(f"{_flat(s['id'], 40)} | {_flat(s['name'], 120)} | n={s['n']} | {s['status']} | stopped by: "
                       f"{_flat(s['killed_by_top'], 200) or '-'}"
                       + (f"; also {_flat(s['killed_by_next'], 200)}" if s.get("killed_by_next") else "")
                       for s in stats.values())
     prompt = (f"Campaign goal: {goal or '(not stated)'}\n\n{JUDGE_RULES}\n"
               f"FAMILIES (id | name | attempts | status | most common stoppers)\n{table or '(none yet)'}\n\n"
-              "NEAREST PRIOR ATTEMPTS\n" + ("\n".join(_line(_brief(h)) for h in hits) or "(none)") + "\n\n"
-              "RECENT ATTEMPTS IN THOSE FAMILIES\n" + ("\n".join(_line(_brief(m)) for m in family_members) or "(none)") +
+              "NEAREST PRIOR ATTEMPTS\n" + ("\n".join(line(h) for h in hits) or "(none)") + "\n\n"
+              "RECENT ATTEMPTS IN THOSE FAMILIES\n" + ("\n".join(line(m) for m in family_members) or "(none)") +
               "\n\nIN-FLIGHT PROPOSALS (claimed by parallel workers, not recorded yet; cite each by its label, pending:<id>)\n" +
-              ("\n".join(f"pending:{_plabel(p)}: {_flat(p['proposal'], 400)}" for p in pending) or "(none)") +
+              ("\n".join(f"{lab}: {_flat(pc['proposal'], 400)}" for lab, pc in claims.items()) or "(none)") +
               f"\n\nPROPOSAL\n{proposal}\n")
     out = llm.json(prompt, JUDGE_SCHEMA)
 
@@ -257,10 +303,11 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
     fam = out.get("family") or OTHER
     addresses = bool(out.get("addresses_stopper"))
     differs = (out.get("what_differs") or "").strip()
-    retry_of = str(out.get("retry_of") or "").strip().lstrip("#")
+    if not _says_something(differs):
+        differs = ""
+    named_retry = resolve(out.get("retry_of") or "")
+    retry_of = named_retry[1] if named_retry and named_retry[0] == "tree" else ""
     rule = ""
-    by_pending = {f"pending:{_plabel(p)}": p for p in pending}
-    shown_pending = set(by_pending)
 
     def dead(node_id):
         f = (tree.get(node_id).get("fingerprint") or {}).get("family") if node_id in tree else None
@@ -282,7 +329,7 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
         verdict, rule = "off_target", ("a variant that does not target what stopped its family: aim the difference "
                                        "at that stopper, or take another direction")
     elif verdict == "retry":
-        if retry_of not in shown or retry_of not in tree:
+        if not retry_of:
             verdict, rule = "duplicate", "a retry must name the prior attempt it fixes, among those the check showed"
         elif retry_bar(retry_of):
             verdict, rule = "duplicate", retry_bar(retry_of)
@@ -290,38 +337,41 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
         retry_of = ""
     confirmation = None
     if verdict == "duplicate" and confirm and out["verdict"] == "duplicate":  # a duplicate a rule made is final
-        raw = [str(i).strip().lstrip("#") for i in out.get("nearest_ids", [])]
-        cited_pending = [i for i in dict.fromkeys(raw) if i in shown_pending]
-        cited_ids = [i for i in dict.fromkeys(raw) if i in shown and i in tree]
+        cites = [c for c in (resolve(i) for i in out.get("nearest_ids", [])) if c]
+        cited_pending = list(dict.fromkeys(key for kind, key in cites if kind == "pending"))
+        cited_ids = list(dict.fromkeys(key for kind, key in cites if kind == "tree"))
         if not cited_ids and not cited_pending:
             cited_ids = [h["id"] for h in hits[:3]]
         seen_ids = [h["id"] for h in hits + family_members if h["id"] not in cited_ids]
         flight = lambda lab: f"[{lab}] (in flight: proposed by a parallel worker, not yet run)\nproposal: " \
-            f"{_flat(by_pending[lab]['proposal'], 2000)}"  # noqa: E731
+            f"{_flat(claims[lab]['proposal'], 2000)}"  # noqa: E731
         confirmation = _confirm(llm, goal, proposal,
-                                [_record(tree.get(i)) for i in cited_ids] + [flight(lab) for lab in cited_pending],
-                                [f"[#{_flat(i, 80)}] {_line(_brief(tree.get(i)))}" for i in seen_ids],
-                                [f"[{lab}] {_flat(p['proposal'], 2000)}" for lab, p in by_pending.items()
+                                [_record(tree.get(i), tree_label[i]) for i in cited_ids]
+                                + [flight(lab) for lab in cited_pending],
+                                [f"[#{tree_label[i]}] {line(tree.get(i))}" for i in seen_ids],
+                                [f"[{lab}] {_flat(pc['proposal'], 2000)}" for lab, pc in claims.items()
                                  if lab not in cited_pending])
         v2 = confirmation.get("verdict")
-        same = str(confirmation.get("same_mechanism_as") or "").strip().lstrip("#").strip("[]").lstrip("#")
+        same = str(confirmation.get("same_mechanism_as") or "").strip()
+        named = resolve(same)
+        same_id = named[1] if named and named[0] == "tree" else ""
         why = _flat(confirmation.get("rationale"), 200)
         differs2 = _flat(confirmation.get("what_differs"), 600)
         if v2 == "retry":
-            bar = ("it named no cited attempt exactly" if same not in cited_ids else
+            bar = ("it named no cited attempt exactly" if same_id not in cited_ids else
                    "it did not find the cited attempt unmeasured" if confirmation.get("cited_was_measured") is not False
                    else "it did not find a located fix in the proposal"
-                   if confirmation.get("proposal_names_located_fix") is not True else retry_bar(same))
+                   if confirmation.get("proposal_names_located_fix") is not True else retry_bar(same_id))
             if bar:
                 rule = f"the confirmation proposed a retry, but {bar}; the duplicate stands"
             else:
-                verdict, retry_of = "retry", same
+                verdict, retry_of = "retry", same_id
                 rule = f"overturned by the confirmation pass (a located fix): {why}"
         elif v2 in ("off_target", "variant", "novel"):
             if same:  # the rules keep same_mechanism_as empty for these; naming any attempt means a repeat was found
                 rule = (f"the confirmation proposed {v2} but named {_flat(same, 80)} as the attempt it repeats; "
                         "the duplicate stands")
-            elif not differs2:
+            elif not _says_something(differs2):
                 rule = f"the confirmation proposed {v2} but named no difference; the duplicate stands"
             else:
                 addresses = bool(confirmation.get("addresses_recorded_stopper"))
@@ -329,11 +379,9 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
                 differs = differs2
                 rule = f"overturned by the confirmation pass: {why}"
         elif v2 == "confirm_duplicate":
-            key = same.rstrip(".,;:) ").split()[0].rstrip(".,;:)") if same.split() else ""
-            shown_ids = {h["id"] for h in hits + family_members}
-            named = (key if key in shown_ids else key if key in shown_pending else
-                     f"pending:{key}" if f"pending:{key}" in shown_pending else "")
-            rule = rule or (f"confirmed: repeats {'#' + named if named in shown_ids else named}" if named else
+            hit = resolve(same, loose=True)
+            shown_as = ("#" + tree_label[hit[1]] if hit[0] == "tree" else hit[1]) if hit else ""
+            rule = rule or (f"confirmed: repeats {shown_as}" if shown_as else
                             "confirmed, but the confirmation named no attempt it was shown")
     warnings = []
     st = stats.get(fam, {})
@@ -341,14 +389,11 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
         warnings.append(f"family {fam} ({st['name']}) is {st['status']}: {st['n']} attempts, "
                         f"{st.get('since_best', 0)} since its best; most often stopped by {st['killed_by_top'] or '-'}")
     nearest = []
-    for i in out.get("nearest_ids", []):
-        i = str(i).strip()
-        if i.startswith("#"):
-            i = i[1:]
-        if i in tree and i in shown:  # a citation counts only if the judge was shown that attempt
-            nearest.append(_brief(tree.get(i)))
-        elif i in by_pending and i in shown_pending:
-            nearest.append({"id": i, "proposal": " ".join(by_pending[i]["proposal"].split())[:200],
+    for kind, key in dict.fromkeys(c for c in (resolve(i) for i in out.get("nearest_ids", [])) if c):
+        if kind == "tree":  # a citation counts only if the judge was shown that attempt, under its label
+            nearest.append(_brief(tree.get(key)))
+        else:
+            nearest.append({"id": key, "proposal": " ".join(claims[key]["proposal"].split())[:200],
                             "mechanism": "", "family": "in-flight", "outcome": "in progress", "killed_by": "", "why": ""})
     return base | {"verdict": verdict, "exit_code": EXIT[verdict], "family": fam, "nearest": nearest,
                    "what_differs": differs, "targets_gate": out.get("targets_gate", ""),

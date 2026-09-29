@@ -40,7 +40,6 @@ from pathlib import Path
 
 from drsi.dream import SEED_POLICY, behaviour_differs, deploy_checks, run_dream
 from drsi.replay import evaluate_policy
-from drsi.reward import support_penalty
 from tests.test_dream import Dev, serial_policy
 from tests.test_round19 import stop_after_roots
 from tests.test_round20 import FAMS, judge_prompt, llm, nearest_section, tree
@@ -50,7 +49,7 @@ from drsi.store import make_node
 from tests import test_round18  # the module, so its tests are not collected again here
 
 KW = dict(W=4, betas=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0], budget=24, lam=0.25, beta1=0.01, beta2=0.01)
-PARAMS = {k: v for k, v in KW.items() if k != "betas"} | {"score": "default", "penalty": "support",
+PARAMS = {k: v for k, v in KW.items() if k != "betas"} | {"score": "default", "penalty": "live",
                                                           "curve": "canonical"}
 CFG = {"search": {"W": 4, "K1": 6}, "dream": {"M": 1, "betas": KW["betas"], "lambda": 0.25, "beta1": 0.01,
                                               "beta2": 0.01, "bootstrap": 200, "gate_worlds": 8}}
@@ -82,10 +81,6 @@ class StopEarlyTest(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def test_unspent_batches_the_record_could_answer_count_as_empty(self):
-        self.assertAlmostEqual(support_penalty([(4, 0, 4)], 4, unspent=5), 5 / 6)
-        self.assertEqual(support_penalty([(4, 0, 4)], 4, unspent=0), 0.0)
 
     def test_stopping_after_the_roots_no_longer_outscores_continuing(self):
         worlds = roots_best_worlds()

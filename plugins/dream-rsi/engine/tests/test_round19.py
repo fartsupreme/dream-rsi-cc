@@ -13,13 +13,14 @@ from pathlib import Path
 from drsi.dream import behaviour_differs, deploy_checks, run_dream, split_evolve
 from drsi.question import ReplayQuestion
 from drsi.replay import evaluate_policy
-from drsi.reward import support_penalty
 from tests.test_dream import Dev, replace_block, serial_policy
 from tests.test_policy import SEED, chain_world
 
 CFG = {"search": {"W": 6, "K1": 4}, "dream": {"M": 1, "betas": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], "lambda": 0.25,
                                                "beta1": 0.01, "beta2": 0.01, "bootstrap": 200, "gate_worlds": 16}}
-OLD = dict(CFG, dream=dict(CFG["dream"], score="sweep", penalty="realized", bootstrap=0, behaviour_gate=False))
+# the old ranking's score and no deploy checks; its "realized" penalty was removed in round 25 (a campaign that still
+# names it ranks by "live")
+OLD = dict(CFG, dream=dict(CFG["dream"], score="sweep", bootstrap=0, behaviour_gate=False))
 TOPUP = """        if len(batch) < W:
             spare = []
             for cell in question.legal_actions():
@@ -63,24 +64,6 @@ def short_records():
     return out
 
 
-class SupportPenaltyTest(unittest.TestCase):
-    def test_full_when_every_answerable_cell_is_probed(self):
-        self.assertEqual(support_penalty([(3, 0, 3), (3, 0, 3)], 6), 0.0)
-
-    def test_rounds_the_record_cannot_answer_are_skipped(self):
-        self.assertEqual(support_penalty([(6, 0, 6), (6, 6, 0)], 6), 0.0)
-
-    def test_padding_with_dead_cells_earns_nothing(self):
-        self.assertAlmostEqual(support_penalty([(6, 3, 6)], 6), 0.5)
-
-    def test_answerable_counts_what_the_record_can_answer(self):
-        q = ReplayQuestion(chain_world(2, 2), 6)
-        self.assertEqual(q.answerable(q.legal_actions()), 2)
-        q.probe_batch(["root:0", "root:1"])
-        q.probe_batch(q.legal_actions())
-        self.assertEqual(q.answerable(q.legal_actions()), 0)
-
-
 class DeploySupportTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -92,10 +75,11 @@ class DeploySupportTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_old_rule_deploys_a_stop_after_roots_revision(self):
+    def test_without_the_realized_penalty_even_the_old_rule_keeps_the_incumbent(self):
+        # it deployed stop-after-roots under the "realized" penalty (rounds 19-24); that penalty is gone (round 25)
         (self.pdir / "method.py").write_text(seed_with_topup(SEED.read_text()))
         rep = run_dream(self.pdir, self.worlds, Dev(stop_after_roots), OLD, self.logs)
-        self.assertTrue(rep["deployed"], rep["revisions"])
+        self.assertFalse(rep["deployed"], rep["revisions"])
 
     def test_stop_after_roots_is_not_deployed(self):
         (self.pdir / "method.py").write_text(seed_with_topup(SEED.read_text()))
@@ -131,7 +115,7 @@ class DeploySupportTest(unittest.TestCase):
         a.write_text(SEED.read_text())
         b.write_text(seed_with_topup(SEED.read_text()))
         params = {"W": 6, "budget": 24, "lam": 0.25, "beta1": 0.01, "beta2": 0.01, "score": "default",
-                  "penalty": "support", "curve": "canonical"}
+                  "penalty": "live", "curve": "canonical"}
         out = deploy_checks(b, a, {}, {}, self.worlds, params, {"bootstrap": 0, "gate_worlds": 8})
         self.assertFalse(out["ok"], out)
         self.assertIn("no change in live behaviour", out["why"])
@@ -146,7 +130,7 @@ class DeploySupportTest(unittest.TestCase):
         b.write_text(seed_with_topup(SEED.read_text()))
         kw = dict(W=6, betas=CFG["dream"]["betas"], budget=24, lam=0.25, beta1=0.01, beta2=0.01)
         ra, rb = evaluate_policy(a, self.worlds, **kw), evaluate_policy(b, self.worlds, **kw)
-        params = dict(kw, score="default", penalty="support", curve="canonical")
+        params = dict(kw, score="default", penalty="live", curve="canonical")
         out = deploy_checks(b, a, rb, ra, self.worlds, params, {"bootstrap": 100, "gate_worlds": 4})
         self.assertFalse(out["ok"], out)
         self.assertIn("resampling noise", out["why"])

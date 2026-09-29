@@ -1,6 +1,6 @@
 import unittest
 
-from drsi.reward import attainment, eq1_value, pareto_step_auc, parallel_penalty
+from drsi.reward import attainment, eq1_value, live_penalty, pareto_step_auc
 
 
 class RewardTest(unittest.TestCase):
@@ -29,10 +29,11 @@ class RewardTest(unittest.TestCase):
         self.assertAlmostEqual(pareto_step_auc([(0.0, 1.0)]), 1.0)
         self.assertAlmostEqual(pareto_step_auc([(1.0, 1.0)]), 0.0)
 
-    def test_parallel_penalty(self):
-        self.assertAlmostEqual(parallel_penalty([4, 4, 4], W=4), 0.0)
-        self.assertAlmostEqual(parallel_penalty([1, 1], W=4), 0.75)
-        self.assertEqual(parallel_penalty([], W=4), 1.0)
+    def test_live_penalty(self):
+        self.assertAlmostEqual(live_penalty([4, 4, 4], W=4), 0.0)
+        self.assertAlmostEqual(live_penalty([1, 1], W=4), 0.75)
+        self.assertEqual(live_penalty([], W=4), 1.0)
+        self.assertAlmostEqual(live_penalty([4, 4], W=4, unspent=2), 0.5)
 
 
 if __name__ == "__main__":
