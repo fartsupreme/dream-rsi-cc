@@ -579,7 +579,7 @@ def live_round(camp: Campaign, policy: PolicySource, runner: LiveRunner) -> dict
 
 
 def next_round_id(camp: Campaign) -> str:
-    """One past every round id already used anywhere: frozen worlds, recorded attempts, worktrees.
+    """One past every round id already used anywhere: frozen worlds, recorded attempts, worktrees, pruned attempts.
     A round interrupted before freezing must not have its id (and branch names) reused."""
     used = [0]
     pat = re.compile(r"^iter(\d{4,})")
@@ -594,6 +594,15 @@ def next_round_id(camp: Campaign) -> str:
     for d in (work.iterdir() if work.exists() else []):
         m = pat.match(d.name)
         used.append(int(m.group(1)) if m else 0)
+    log = camp.root / "logs" / "prune.jsonl"  # a round whose every attempt was pruned leaves only this
+    for line in (log.read_text(errors="replace").splitlines() if log.exists() else []):
+        try:
+            ids = json.loads(line).get("ids") or []
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        for i in ids:
+            m = pat.match(str(i))
+            used.append(int(m.group(1)) if m else 0)
     if (camp.root / "repo" / ".git").exists():  # an interrupted round may have left only branches behind
         from .workspace import _git
         out = _git(camp.root / "repo", "branch", "--list", "drsi/iter*", "--format=%(refname:short)", check=False)
@@ -635,8 +644,11 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
                                                "incumbent_reward": None, "best_reward": None}})
             continue
         d = run_dream(policy_dir, worlds, developer, camp.config, camp.root / "logs")
-        say(f"{round_id}: dream {'deployed ' + d['version'] if d['deployed'] else 'kept the incumbent'} "
-            f"(reward {d['incumbent_reward']:.4f} -> {d['best_reward']:.4f})")
+        if d.get("skipped"):
+            say(f"{round_id}: dream skipped: {d['skipped']}")
+        else:
+            say(f"{round_id}: dream {'deployed ' + d['version'] if d['deployed'] else 'kept the incumbent'} "
+                f"(reward {d['incumbent_reward']:.4f} -> {d['best_reward']:.4f})")
         rounds.append(summary | {"dream": {"deployed": d["deployed"], "version": d["version"],
                                            "incumbent_reward": d["incumbent_reward"], "best_reward": d["best_reward"]}})
     return {"rounds": rounds}

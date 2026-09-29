@@ -14,7 +14,7 @@ from drsi.dream import behaviour_differs, deploy_checks, run_dream, split_evolve
 from drsi.question import ReplayQuestion
 from drsi.replay import evaluate_policy
 from drsi.reward import support_penalty
-from tests.test_dream import Dev, replace_block
+from tests.test_dream import Dev, replace_block, serial_policy
 from tests.test_policy import SEED, chain_world
 
 CFG = {"search": {"W": 6, "K1": 4}, "dream": {"M": 1, "betas": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], "lambda": 0.25,
@@ -133,8 +133,8 @@ class DeploySupportTest(unittest.TestCase):
         out = deploy_checks(b, a, {}, {}, self.worlds, params, {"bootstrap": 0, "gate_worlds": 8})
         self.assertFalse(out["ok"], out)
         self.assertIn("no change in live behaviour", out["why"])
-        c = Path(self.tmp.name) / "c.py"
-        c.write_text(stop_after_roots(SEED.read_text()))
+        c = Path(self.tmp.name) / "c.py"  # a live change that spends the whole round passes (round 22: stopping early
+        c.write_text(serial_policy())      # does not, since it does less work live)
         self.assertTrue(deploy_checks(c, a, {}, {}, self.worlds, params, {"bootstrap": 0, "gate_worlds": 4})["ok"])
 
     def test_a_gain_within_resampling_noise_is_refused(self):

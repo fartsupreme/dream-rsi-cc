@@ -106,14 +106,19 @@ expect a campaign's first rounds to find its loopholes.
   orchestrator checks the proposal against everything tried; implement. A duplicate or an off-target variant goes
   back with the judge's reasons, up to `live.max_proposals` tries, and is recorded as `not_novel` if it never passes.
   How the check decides: BM25 over fingerprints retrieves the nearest attempts, with the proposal's own fingerprint
-  added to the query (a renamed repeat then shares the record's plain words) and any `#id` the proposal cites put
-  first; an LLM judge compares the proposal with only what it was shown, and a citation counts only if the judge was
-  shown that attempt. A variant not aimed at what stopped its family is off target, not a duplicate: it may be revised.
-  A located fix (where the bug is and what the fix is) to an attempt a bug stopped before its mechanism was measured
-  is a retry, allowed like a variant (in a dead family it must also target the family's stopper). Before a duplicate
-  verdict is final, a second pass reads the full cited records (in-flight proposals included) and may overturn it.
-  On a planted test set (88 recorded attempts, 65 labelled probes, a real judge) this took non-repeats wrongly made
-  final duplicates from 3 of 28 to 0; true repeats let through stayed at 1 of 37.
+  added to the query (a renamed repeat then shares the record's plain words), and any `#id` the proposal cites
+  shown first, next to the search hits rather than in place of them; an LLM judge compares the proposal with only
+  what it was shown, and a citation counts only if the judge was shown that attempt. A variant not aimed at what
+  stopped its family is off target, not a duplicate: it may be revised. A located fix (where the bug is and what the
+  fix is) to an attempt a bug stopped before its mechanism was measured is a retry, allowed like a variant; a retry
+  in a dead family, or of an attempt whose mechanism was measured, is a duplicate. Before any other duplicate verdict
+  is final, a second pass reads the full cited records (a cited in-flight proposal counts as tried), the other
+  attempts the judge was shown and the other in-flight proposals, each field flattened to one capped line. It may
+  overturn the duplicate only by naming a concrete difference, and to a retry only by naming the exact attempt, an
+  unmeasured one, and the located fix.
+  On a planted test set (88 recorded attempts, 65 labelled probes, one run with a real judge) this took non-repeats
+  wrongly made final duplicates from 3 of 28 to 0 and true repeats let through from 1 of 37 to 0; two variants not
+  aimed at a stopper were sent back as off target. The judge varies between runs (an earlier run let 1 through).
   The worktree is deleted and recreated after proposing, so nothing a worker does then survives. An attempt
   that never passes the check owns no code, so nothing unchecked can reach its descendants. The
   check can't be skipped or forged, and the proposal recorded is the one that was judged. Parallel attempts
@@ -192,16 +197,20 @@ expect a campaign's first rounds to find its loopholes.
     `[0, .2, .4, .6, .8, 1]` is reported but earns nothing, so behaviour at betas that never run cannot win.
   - The parallel penalty is 1 − the mean batch fill, where a batch is full when it probes every cell the record
     can answer, up to W. Running out of recorded roots or probing the end of a recorded branch is not charged
-    (live has neither), and padding a batch with dead cells earns nothing. Under the old penalty a policy that
-    opened the roots and stopped outranked one that refined them.
+    (live has neither), and padding a batch with dead cells earns nothing. Stopping while the record could still
+    answer counts each batch the budget had left as empty, so stopping never escapes the charge an under-filled
+    continuation pays. Under the old penalty a policy that opened the roots and stopped outranked one that refined
+    them, and until this rule it still did on records whose best score sits at the roots.
   - The cells of one batch are credited in a fixed order: they run in parallel live, so listing order earns
     nothing.
   - Reaching good attempts sooner scores higher even when every run explores the whole world.
   - Worlds without a single valid reachable score can't favour any policy.
 - **Deploying a revision:** strictly better replay reward is not enough. The 5th percentile of a paired
   bootstrap of the reward difference across worlds must exceed `dream.margin`, and the revision must change what
-  the policy does on live-like trees (unbounded roots, no branch ends); a change that acts only when recorded
-  roots or branches run out changes nothing live. A tie keeps the incumbent. No dream runs until
+  the policy does on live-like trees (unbounded roots, no branch ends) without spending fewer probes there than the
+  incumbent (replay reveals only what was recorded, so it cannot value the work a revision gives up); a change that
+  acts only when recorded roots or branches run out changes nothing live. A tie keeps the incumbent, and so does an
+  incumbent that fails replay (nothing can be compared with it; no revision is asked for). No dream runs until
   `dream.min_worlds` (default 4) worlds can separate policies (a valid score and at least one continuation).
   The old ranking stays available as `dream.score = "sweep"`, `dream.penalty = "realized"`, `dream.curve = "reveal"`.
 - **Parallel attempts:** the orchestrator's checks within a round are two-phase claims. Each claim is
@@ -232,7 +241,9 @@ expect a campaign's first rounds to find its loopholes.
   changed files. It re-roots anything that continued from one, drops them from the frozen round worlds (a world
   left empty goes), deletes their branches, worktrees and proposal directories, withdraws their novelty claims, and
   logs each removal to `logs/prune.jsonl`. An attempt that did work is refused whatever it matches, and while a run
-  is live the round it is still running is left alone.
+  is live the round it is still running is left alone. The tree is changed last, so a prune that fails midway leaves
+  nothing pointing at missing attempts and can be run again to finish; prune and rescore rewrite worlds under one
+  lock; a pruned round's id is never handed out again.
 - **Worker models:** workers run on `llm.worker_model` (default `opus`). To draw ideas from more than one model at once,
   set `llm.worker_models` to a list: slot i of each batch runs `worker_models[i % len]`, so `["opus", "fable"]` with
   `search.W = 6` runs three of each. The assignment rotates by one slot each batch: a policy lists a batch best cell

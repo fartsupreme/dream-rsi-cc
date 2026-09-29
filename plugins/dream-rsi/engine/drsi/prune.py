@@ -7,7 +7,7 @@ work: a live attempt that failed as a worker or orchestration error, with no sco
 them from the tree (anything that continued from one moves to its nearest kept ancestor), from the frozen round worlds
 (a world left with nothing is removed), their branches, worktrees and proposal directories; it withdraws their novelty
 claims, rewrites the map, and appends what it removed to logs/prune.jsonl. While a run is live, attempts of a round not
-yet frozen are left alone.
+yet frozen are left alone. The tree is changed last, so a prune that fails midway can be run again to finish.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from pathlib import Path
 from . import guardian
 from .novelty import record_check
 from .store import Campaign, _atomic_write, utcnow
+from .worlds import worlds_lock
 
 NO_WORK = {"agent_error", "orchestrator_error"}
 
@@ -59,26 +60,46 @@ def prune(camp: Campaign, ids: set[str] | None = None, error_match: str | None =
            "worlds_removed": [], "worlds_rewritten": []}
     if dry_run or not victims:
         return rep
-    rep["reparented"] = tree.prune(gone)
+    # The tree goes last: it is what selects the victims, so every step before it can simply be repeated by a rerun
+    # if one fails, and nothing is left pointing at attempts the tree no longer has.
+    with worlds_lock(pool):
+        for wp in sorted(pool.glob("*/world.json")):
+            try:
+                w = json.loads(wp.read_text())
+            except FileNotFoundError:
+                continue
+            if not {n["id"] for n in w["nodes"]} & gone:
+                continue
+            keep = [n for n in w["nodes"] if n["id"] not in gone]
+            if not keep:
+                shutil.rmtree(wp.parent)
+                rep["worlds_removed"].append(wp.parent.name)
+                continue
+            parent_of = {n["id"]: n.get("parent") for n in w["nodes"]}
+            for n in keep:
+                q = n.get("parent")
+                while q is not None and q in gone:
+                    q = parent_of.get(q)
+                n["parent"] = q
+            w["nodes"] = keep
+            _atomic_write(wp, json.dumps(w, ensure_ascii=True))
+            rep["worlds_rewritten"].append(wp.parent.name)
 
-    for wp in sorted(pool.glob("*/world.json")):
-        w = json.loads(wp.read_text())
-        if not {n["id"] for n in w["nodes"]} & gone:
-            continue
-        keep = [n for n in w["nodes"] if n["id"] not in gone]
-        if not keep:
-            shutil.rmtree(wp.parent)
-            rep["worlds_removed"].append(wp.parent.name)
-            continue
-        parent_of = {n["id"]: n.get("parent") for n in w["nodes"]}
-        for n in keep:
-            p = n.get("parent")
-            while p is not None and p in gone:
-                p = parent_of.get(p)
-            n["parent"] = p
-        w["nodes"] = keep
-        _atomic_write(wp, json.dumps(w, ensure_ascii=True))
-        rep["worlds_rewritten"].append(wp.parent.name)
+    if camp.checks_path.exists():  # a claim of an attempt that is gone would read as in flight
+        import fcntl
+        with open(camp.checks_path.parent / "check.lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            latest = {}
+            for line in camp.checks_path.read_text(errors="replace").splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict) and row.get("node") in gone:
+                    latest[row["node"]] = row.get("verdict")
+            for nid in sorted(n for n, v in latest.items() if v != "withdrawn"):
+                record_check(camp.checks_path, {"node": nid, "verdict": "withdrawn", "checked": utcnow(),
+                                                "rationale": "the attempt was pruned"})
 
     work = camp.root / "work"
     if (camp.root / "repo" / ".git").exists():
@@ -99,23 +120,7 @@ def prune(camp: Campaign, ids: set[str] | None = None, error_match: str | None =
         if d.is_dir():
             shutil.rmtree(d)
 
-    if camp.checks_path.exists():  # a claim of an attempt that is gone would read as in flight
-        import fcntl
-        claimed = set()
-        for line in camp.checks_path.read_text(errors="replace").splitlines():
-            try:
-                node = json.loads(line).get("node")
-            except json.JSONDecodeError:
-                continue
-            if node in gone:
-                claimed.add(node)
-        if claimed:
-            with open(camp.checks_path.parent / "check.lock", "w") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                for nid in sorted(claimed):
-                    record_check(camp.checks_path, {"node": nid, "verdict": "withdrawn", "checked": utcnow(),
-                                                    "rationale": "the attempt was pruned"})
-
+    rep["reparented"] = tree.prune(gone)
     logp = camp.root / "logs" / "prune.jsonl"
     logp.parent.mkdir(parents=True, exist_ok=True)
     with open(logp, "a") as fh:

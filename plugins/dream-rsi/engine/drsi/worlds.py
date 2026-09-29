@@ -2,15 +2,24 @@
 
 A world is {"id", "baseline", "nodes": [{"id", "parent", "score", "valid", "fail_class", "family"}]}.
 A world is written once, when its round finishes. Only two commands change one afterwards: `drsi rescore`
-(new readings of the same attempts) and `drsi prune` (attempts that did no work removed).
+(new readings of the same attempts) and `drsi prune` (attempts that did no work removed), each under the worlds lock.
 """
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 from .families import RANK
-from .store import Tree, _atomic_write
+from .store import Tree, _atomic_write, _locked
+
+
+@contextmanager
+def worlds_lock(pool):
+    """Held by every rewrite of an existing world (rescore, prune), so neither overwrites the other's change."""
+    Path(pool).mkdir(parents=True, exist_ok=True)
+    with _locked(Path(pool) / "worlds"):
+        yield
 
 
 def outcome_score(node: dict) -> float | None:
@@ -49,7 +58,10 @@ def freeze_world(pool, world: dict) -> Path:
 def load_worlds(pool) -> list[dict]:
     out = []
     for p in sorted(Path(pool).glob("*/world.json")):
-        w = json.loads(p.read_text())
+        try:
+            w = json.loads(p.read_text())
+        except FileNotFoundError:  # removed since the listing (a prune emptied it): it is no longer a world
+            continue
         if w.get("nodes"):
             out.append(w)
     return out
