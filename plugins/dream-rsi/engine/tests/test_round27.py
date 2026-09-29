@@ -366,6 +366,85 @@ class OptionsTest(unittest.TestCase):
             self.assertTrue(any("only under the defaults" in w for w in ws), (key, value, ws))
 
 
+ALL_ROOTS_ONLY = """    # EVOLVE-BLOCK-START
+    def select_batch(self, question, closed, state):
+        return question.legal_roots()[:question.max_parallelism]
+    # EVOLVE-BLOCK-END
+"""
+# Grok's candidate: open roots 0-19, then root:20 with three continuations the record lacks
+LATE_BEST = """    # EVOLVE-BLOCK-START
+    def select_batch(self, question, closed, state):
+        W = question.max_parallelism
+        if question.rounds < 5:
+            return question.legal_roots()[:W]
+        leaves = [c for c in question.legal_actions() if not c.startswith("root:")]
+        return ["root:20"] + sorted(leaves)[:W - 1]
+    # EVOLVE-BLOCK-END
+"""
+
+
+def hundred_roots():
+    """100 recorded roots; the best, on root:20, has the id that sorts last; one continuation elsewhere."""
+    nodes = [{"id": "r999" if r == 20 else f"r{r:03d}", "parent": None, "score": 1.0 if r == 20 else 0.0,
+              "valid": True} for r in range(100)]
+    nodes.append({"id": "r050c", "parent": "r050", "score": 0.0, "valid": True})
+    return {"id": "hundred", "baseline": 0.0, "nodes": nodes}
+
+
+class GrokRoundTwentySevenTest(unittest.TestCase):
+    """The cross-vendor review of a6c0f80 (Grok); the first two were fixed by the review of round 27 as well."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_revision_that_reaches_its_best_in_the_ending_batch_is_not_deployed(self):
+        pdir = self.root / "policy"
+        pdir.mkdir()
+        (pdir / "method.py").write_text(with_block(ALL_ROOTS_ONLY)(SEED_POLICY.read_text()))
+        cfg = {"search": {"W": 4, "K1": 6}, "dream": {"M": 1, "betas": [0.0, 0.6, 1.0], "lambda": 0.25,
+                                                      "beta1": 0.01, "beta2": 0.01, "bootstrap": 200, "gate_worlds": 8}}
+        rep = run_dream(pdir, [hundred_roots() for _ in range(4)], Dev(with_block(LATE_BEST)), cfg, self.root / "logs")
+        self.assertIsNone(rep["skipped"], rep)
+        self.assertEqual(rep["revisions"][0]["stage"], "scored", rep["revisions"])
+        self.assertFalse(rep["deployed"], rep["revisions"])
+
+    def test_leftover_budget_after_the_end_is_charged_below_any_live_continuation(self):
+        from drsi.replay import _aggregate
+        truth = {"id": "t", "baseline": 0.0, "nodes": [
+            {"id": f"r{r}", "parent": None, "score": 0.5 if r == 0 else 0.0, "valid": True} for r in range(4)]}
+        prev = "r0"
+        for d in range(4):
+            truth["nodes"].append({"id": f"r0c{d}", "parent": prev, "score": 0.0, "valid": True})
+            prev = f"r0c{d}"
+        recorded = {"id": "t", "baseline": 0.0, "nodes": truth["nodes"][:4]}
+        block = """    # EVOLVE-BLOCK-START
+    def select_batch(self, question, closed, state):
+        if question.rounds == 0:
+            return question.legal_roots()[:4]
+        obs = question.observed()
+        deepest = max((o for o in obs.values() if o.branch == 0), key=lambda o: o.seq)
+        return [deepest.id]
+    # EVOLVE-BLOCK-END
+"""
+        pol = write(self.root, "deep.py", with_block(block)(SEED_POLICY.read_text()))
+        kw = dict(W=4, betas=[], budget=8, lam=0.25, beta1=0.01, beta2=0.01)
+        replayed = evaluate_policy(pol, [recorded], **kw)
+        live = evaluate_policy(pol, [truth], **kw)
+        self.assertLessEqual(replayed["reward"], _aggregate(live["measured"], [recorded], 4, 0.25, 0.01, 0.01)["reward"])
+
+    def test_a_world_of_roots_alone_can_separate_policies(self):
+        from drsi.worlds import informative
+        roots = {"id": "roots", "baseline": 0.0, "nodes": [
+            {"id": f"r{r:02d}", "parent": None, "score": 1.0 if r == 3 else 0.0, "valid": True} for r in range(24)]}
+        self.assertEqual(informative([roots]), 1)
+        self.assertEqual(informative([{"id": "x", "baseline": 0.0, "nodes": [
+            {"id": "f", "parent": None, "score": None, "valid": False}]}]), 0)  # no valid score: nothing to separate
+
+
 class LabelFirstTest(unittest.TestCase):
     def test_a_citation_that_is_one_attempts_label_and_anothers_id_means_the_label(self):
         with tempfile.TemporaryDirectory() as d:

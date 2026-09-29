@@ -239,7 +239,8 @@ expect a campaign's first rounds to find its loopholes.
   the revision must change what the policy does on live-like trees without spending fewer probes there than the
   incumbent. A tie keeps the incumbent, and so does an incumbent that fails replay (nothing can be compared with
   it; no revision is asked for). No dream runs, in the loop or in `drsi dream`, until `dream.min_worlds`
-  (default 4) of those worlds can separate policies (a valid score and at least one continuation); the reason is
+  (default 4) of those worlds can separate policies (any with a valid score: even roots alone do, by which slots a
+  policy opens first); the reason is
   printed.
   The old ranking's score and curve stay available as `dream.score = "sweep"` and `dream.curve = "reveal"`
   (or `"batch"`, `"clock"`), but the guarantee above holds only for the defaults: those options can reward
