@@ -256,27 +256,30 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
     labels: dict[str, tuple[str, str]] = {}  # label -> ("tree", attempt id) or ("pending", label)
     claims: dict[str, dict] = {}  # in-flight label -> claim
 
-    def new_label(base: str) -> str:
-        lab, n = base or "?", 1
+    def new_label(raw, prefix: str = "") -> str:
+        # a label is one token that survives how citations are read back: no spaces, no leading "#" or "[", no
+        # trailing "]" or punctuation (with "3" shown too, an id "#3" is shown as "3~2", never as "##3")
+        base = re.sub(r"\s", "_", _flat(raw, 72)).lstrip("#[").rstrip("].,;:)") or "?"
+        lab, n = prefix + base, 1
         while lab in labels:
             n += 1
-            lab = f"{base or '?'}~{n}"
+            lab = f"{prefix}{base}~{n}"
         return lab
     tree_label: dict[str, str] = {}
     for h in hits + family_members:
         if h["id"] not in tree_label:
-            tree_label[h["id"]] = lab = new_label(_flat(h["id"], 72))
+            tree_label[h["id"]] = lab = new_label(h["id"])
             labels[lab] = ("tree", h["id"])
     for pc in pending:
-        lab = new_label(f"pending:{_flat(pc.get('node') or pc.get('ticket') or '?', 72)}")
+        lab = new_label(pc.get("node") or pc.get("ticket") or "?", "pending:")
         labels[lab] = ("pending", lab)
         claims[lab] = pc
 
     def resolve(cite, loose: bool = False) -> tuple[str, str] | None:
         """The attempt or in-flight proposal a citation names, by its label; loose also reads a label followed by
         words ("#3 (radix merge)")."""
-        c = _flat(cite, 200).strip().lstrip("#").strip("[]").lstrip("#")
-        keys = [c, c.rstrip(".,;:)")] + ([c.split()[0].rstrip(".,;:)")] if loose and c.split() else [])
+        c = _flat(cite, 200).strip().lstrip("#[").rstrip("]").lstrip("#")
+        keys = [c, c.rstrip("].,;:)")] + ([c.split()[0].rstrip("].,;:)")] if loose and c.split() else [])
         for k in keys:
             hit = labels.get(k) or labels.get(f"pending:{k}")
             if hit:

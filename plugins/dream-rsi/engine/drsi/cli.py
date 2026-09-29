@@ -26,7 +26,7 @@ from .dream import SEED_POLICY, _params, config_warnings, run_dream
 from .live import WORKER_REPORT_SCHEMA, WORKER_TOOLS, LiveRunner, run_cycles, write_map
 from .replay import evaluate_policy
 from .store import Campaign, default_home
-from .worlds import load_worlds, world_from_tree
+from .worlds import load_worlds, with_cells, world_from_tree
 
 # Tests replace these. LLM_FACTORY(cfg, role) -> object with .json(prompt, schema);
 # WORKER_FACTORY(camp) -> worker_fn(workspace, prompt, system);
@@ -351,7 +351,7 @@ def _history_world(camp: Campaign) -> dict:
 
 
 def _worlds(camp: Campaign, history: bool) -> list[dict]:
-    worlds = load_worlds(camp.root / "trace_pool")
+    worlds = with_cells(load_worlds(camp.root / "trace_pool"), camp.tree)
     if history:
         worlds.append(_history_world(camp))
     return [w for w in worlds if w["nodes"]]
@@ -473,6 +473,9 @@ def cmd_prune(a) -> int:
         _err("drsi prune: name the attempts (--ids a,b,...) or the error text they carry (--error-match TEXT)")
         return 2
     ids = {i.strip() for i in a.ids.split(",") if i.strip()} if a.ids else None
+    if a.ids and not ids:
+        _err("drsi prune: --ids names no attempt (give comma-separated attempt ids)")
+        return 2
     rep = prune(camp, ids=ids, error_match=a.error_match, dry_run=a.dry_run, reason=a.reason or "",
                 log=lambda m: None)
     for nid in rep["refused"]:
@@ -516,6 +519,9 @@ def cmd_dream(a) -> int:
     d = run_dream(camp.root / "policy", worlds, make_developer(camp), camp.config, camp.root / "logs")
     for w in d.get("warnings", []):
         print(f"warning: {w}")
+    if d.get("skipped"):
+        print(f"dream skipped: {d['skipped']}")
+        return 0
     for r in d["revisions"]:
         extra = f" reward {r['reward']:.4f}" if r.get("reward") is not None else ""
         print(f"  revision {r['m']}: {r['stage']}{extra}{' — ' + r['error'][:160] if r.get('error') else ''}")

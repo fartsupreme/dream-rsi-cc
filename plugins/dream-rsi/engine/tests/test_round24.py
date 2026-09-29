@@ -34,6 +34,7 @@ from drsi.question import IllegalBatch, ReplayQuestion
 from drsi.replay import evaluate_policy
 from drsi.reward import live_penalty
 from tests import test_round18
+from tests.helpers import own_worlds
 from tests.test_dream import Dev, serial_policy
 from tests.test_policy import chain_world
 from tests.test_round19 import stop_after_roots
@@ -138,7 +139,10 @@ class ReplayGainsTest(unittest.TestCase):
         pdir = self.root / "policy"
         pdir.mkdir()
         (pdir / "method.py").write_text(SEED_POLICY.read_text())
-        self.assertFalse(run_dream(pdir, w, Dev(no_plateau), CFG, self.root / "logs")["deployed"])
+        rep = run_dream(pdir, own_worlds(SEED_POLICY.read_text(), 4, 24, plateau=True), Dev(no_plateau), CFG,
+                        self.root / "logs")
+        self.assertIsNone(rep["skipped"], rep)
+        self.assertFalse(rep["deployed"], rep)
 
     def test_roots_first_policies_do_not_outscore_the_seed_on_deep_records(self):
         w = chain_worlds()

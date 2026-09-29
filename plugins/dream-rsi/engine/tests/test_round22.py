@@ -43,7 +43,7 @@ from drsi.replay import evaluate_policy
 from tests.test_dream import Dev, serial_policy
 from tests.test_round19 import stop_after_roots
 from tests.test_round20 import FAMS, judge_prompt, llm, nearest_section, tree
-from tests.helpers import ScriptedLLM
+from tests.helpers import ScriptedLLM, own_worlds
 from drsi.novelty import check
 from drsi.store import make_node
 from tests import test_round18  # the module, so its tests are not collected again here
@@ -101,7 +101,8 @@ class StopEarlyTest(unittest.TestCase):
         pdir = self.root / "policy"
         pdir.mkdir()
         (pdir / "method.py").write_text(SEED_POLICY.read_text())
-        rep = run_dream(pdir, roots_best_worlds(), Dev(stop_after_roots), CFG, self.root / "logs")
+        rep = run_dream(pdir, own_worlds(SEED_POLICY.read_text(), 4, 24), Dev(stop_after_roots), CFG, self.root / "logs")
+        self.assertIsNone(rep["skipped"], rep)
         self.assertFalse(rep["deployed"], rep["revisions"])
 
     def test_the_gate_refuses_a_revision_that_does_less_work_live(self):

@@ -14,8 +14,9 @@ It has two layers:
    arXiv 2609.14858). An exploration policy (Python code) chooses which attempts to extend and how many
    to run in parallel. Fresh headless Claude workers run the attempts in git worktrees, and a campaign
    scorer grades them. Each finished round is frozen as a replay world. In the dream phase an agent
-   rewrites the policy, each revision is scored by replaying it over every frozen world at zero execution
-   cost, and the best one is redeployed only if it does not regress.
+   rewrites the policy, each revision is scored by replaying it over the frozen worlds at zero execution
+   cost, and the best one is redeployed only if the record shows it doing better than the incumbent (see
+   **Deploying a revision**).
 
 ## What it does not do
 
@@ -151,8 +152,10 @@ expect a campaign's first rounds to find its loopholes.
   - That subprocess records only the batches each run requested. The parent process replays those traces on
     its own copy of each world and computes every metric itself, so nothing a policy does to objects in its
     own process can change its score.
-  - The question enforces the probe budget exactly, forbids re-entrant probes and `reset()` after probing,
-    and counts parallel work only for probes that revealed something.
+  - The question enforces the probe budget exactly and forbids re-entrant probes and `reset()` after probing.
+  - Replay, the behaviour gate and a live round hand the policy the same view: attempts are shown under ids that
+    say only when they were revealed (`a1`, `a2`, ...), the question prints as `<question>`, and the policy is built
+    with no argument at its default beta, as a live round builds it.
   - In a live round the policy runs in a child process. The orchestrator validates every batch on its own
     copy of the question and runs the attempts. If the policy thinks longer than `live.think_timeout_s`
     between batches, the orchestrator kills the child's process group, and no handler or `finally` block in
@@ -195,9 +198,11 @@ expect a campaign's first rounds to find its loopholes.
   normalisation are therefore computed over reachable attempts only. Replay shows a policy exactly what a live round
   would: root slots never run out, and past the record (a root slot beyond the recorded roots, a leaf beyond the end
   of its recorded branch) a probe reveals a failed attempt, with no score and the world's usual failure class, which
-  can be continued like any other. Replay can value only what was recorded, in breadth and in depth alike, and
-  nothing a policy can observe tells it where the record ends. The question object exposes only what the live one
-  does. Ranking always runs under a budget (K1 × W probes per world, as a live round).
+  can be continued like any other. Recorded roots open in the slots they were opened in live (each attempt keeps
+  its cell), so a policy replaying a round it ran meets every attempt where it met it. Replay can value only what
+  was recorded, in breadth and in depth alike; nothing in the view a policy gets tells it where the record ends
+  (only the scores can: a ground truth the record lacks is not something replay can supply). Ranking always runs
+  under a budget (K1 × W probes per world, as a live round).
 - **Reward:** the paper states Eq. 1 `V = max s_v − β1·N + β2·N/max(1,k)` in its method section but ranks
   policies by `pareto.auc − λ · parallel_penalty` over a beta sweep in the prompt it ran (Appendix B.2); the two
   disagree. Here Eq. 1 (with attainment for s_v, β1 = β2 = 0.01) is reported, and policies are ranked by an
@@ -209,21 +214,27 @@ expect a campaign's first rounds to find its loopholes.
     stops before its budget counts each batch it left as empty, so stopping never escapes the charge an under-filled
     continuation pays. Rounds 19 to 23 measured fill against what the record could answer and capped root slots at
     the recorded roots; three reviews found revisions that gained in replay only through that cap (stopping after
-    the roots, dropping the plateau rule, opening every root first), and a fourth found one that waited for a probe
-    to come back empty. Replay that looks exactly like live removes what they all used. The older penalties are
-    gone: a campaign whose `dream.penalty` still says `"support"` or `"realized"` ranks by `"live"` and warns.
+    the roots, dropping the plateau rule, opening every root first), and later reviews found revisions that told
+    replay from live by an empty probe, by ids, by the question's class or by how the policy was built. One view in
+    every environment removes what they all used. The older penalties are gone: a campaign whose `dream.penalty`
+    still says `"support"` or `"realized"` ranks by `"live"` and warns; an unknown `dream.score` or `dream.curve`
+    ranks by the default and warns.
   - The cells of one batch are credited in a fixed order: they run in parallel live, so listing order earns
     nothing.
   - Reaching good attempts sooner scores higher even when every run explores the whole world.
   - Worlds without a single valid reachable score can't favour any policy.
-- **Deploying a revision:** strictly better replay reward is not enough. The 5th percentile of a paired
-  bootstrap of the reward difference across worlds must exceed `dream.margin`, and the revision must change what
-  the policy does on live-like trees (no branch ends) without spending fewer probes there than the incumbent (replay
-  reveals only what was recorded, so it cannot value the work a revision gives up). Replay still values only what
-  was recorded: a revision that explores well where the record is thin looks no better than the incumbent there.
-  A tie keeps the incumbent, and so does an
-  incumbent that fails replay (nothing can be compared with it; no revision is asked for). No dream runs until
-  `dream.min_worlds` (default 4) worlds can separate policies (a valid score and at least one continuation).
+- **Deploying a revision:** replay is exact only where the record answers. The incumbent's replay stays on the
+  record in every round it recorded itself, so policies are compared on the worlds where it does (on any other
+  world, replay would credit whichever policy resembles the one that recorded it). A candidate's probes past the
+  record count as failures there, which errs toward keeping the incumbent: a revision that explores where the
+  record is thin looks no better than the incumbent, and a revision the record can vouch for (one that reaches the
+  incumbent's own best attempts sooner, say) deploys. Strictly better replay reward is not enough: the 5th
+  percentile of a paired bootstrap of the reward difference across those worlds must exceed `dream.margin`, and
+  the revision must change what the policy does on live-like trees without spending fewer probes there than the
+  incumbent. A tie keeps the incumbent, and so does an incumbent that fails replay (nothing can be compared with
+  it; no revision is asked for). No dream runs, in the loop or in `drsi dream`, until `dream.min_worlds`
+  (default 4) of those worlds can separate policies (a valid score and at least one continuation); the reason is
+  printed.
   The old ranking's score and curve stay available as `dream.score = "sweep"` and `dream.curve = "reveal"`;
   `drsi replay` ranks exactly as the dream step does.
 - **Parallel attempts:** the orchestrator's checks within a round are two-phase claims. Each claim is
@@ -251,7 +262,7 @@ expect a campaign's first rounds to find its loopholes.
   worlds and the map. Attempts that never reached the scorer (not novel, out of scope, a failed worker) are left alone.
 - **Pruning:** `drsi prune -c NAME --error-match TEXT` (or `--ids a,b,...`, `--dry-run` first) removes recorded
   attempts that did no work: a live attempt that failed as a worker or orchestration error, with no score and no
-  changed files. It re-roots anything that continued from one, drops them from the frozen round worlds (a world
+  changed files. It moves anything that continued from one to its nearest kept ancestor, drops them from the frozen round worlds (a world
   left empty goes), deletes their branches, worktrees and proposal directories, withdraws their novelty claims, and
   logs each removal to `logs/prune.jsonl`. An attempt that did work is refused whatever it matches, and while a run
   is live the round it is running (which the run notes in `logs/current_round`) is left alone. The tree is changed
@@ -271,7 +282,8 @@ expect a campaign's first rounds to find its loopholes.
   directions a worker can build there. Each suggested direction goes to one new branch of a round; branches past
   the frontier's length choose from the map. Each suggestion is checked against the record before anyone sees it:
   a duplicate or off-target one is dropped (listed under `frontier_dropped` in families.json), and one judged a
-  variant names its nearest attempts.
+  variant names its nearest attempts. If the check itself fails, the suggestion is kept, recorded as `checked: false`
+  in families.json (a worker's own proposal is still checked before it builds).
 - **Moving the base:** to correct the fixed files workers read (a brief, a README, the scorer) mid-campaign,
   commit the change in the source repository and set `workspace.base` to that commit. The next round takes it
   up if it descends from the pinned base. New branches start on it; a continuation starts on it with its

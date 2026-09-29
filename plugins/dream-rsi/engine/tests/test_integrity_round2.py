@@ -13,7 +13,7 @@ from drsi.novelty import check
 from drsi.question import IllegalBatch, ReplayQuestion
 from drsi.replay import evaluate_policy, world_best
 from drsi.store import Tree, make_node
-from tests.helpers import ScriptedLLM
+from tests.helpers import ScriptedLLM, record, truth_world
 from tests.test_dream import CFG, Dev, replace_block, seed_block
 from tests.test_policy import SEED, chain_world
 from tests.test_replay import HEADER
@@ -74,7 +74,8 @@ class BudgetTest(unittest.TestCase):
             (pdir / "method.py").write_text(SEED.read_text())
             evil = seed_block().replace("    # EVOLVE-BLOCK-END",
                                         "    def solve(self, question, budget=None):\n        return None\n    # EVOLVE-BLOCK-END")
-            rep = run_dream(pdir, [chain_world()], Dev(replace_block(evil)), dict(CFG, dream=dict(CFG["dream"], M=1)),
+            worlds = [record(SEED, truth_world(i), 4, 24, f"iter{i:04d}") for i in range(4)]  # the incumbent's own
+            rep = run_dream(pdir, worlds, Dev(replace_block(evil)), dict(CFG, dream=dict(CFG["dream"], M=1)),
                             Path(d) / "logs")
             self.assertEqual(rep["revisions"][0]["stage"], "scope")
 

@@ -2,8 +2,10 @@
 
 M revisions per phase. Each revision is written by a policy-developer agent that
 may edit only the EVOLVE block, is checked by the guard, and is scored by replay
-over every frozen world. The best revision is deployed only if its reward is at
-least the incumbent's (no regression). Every deployed version is archived.
+over the frozen worlds on which the incumbent's replay stays on the record (there
+its replay is exactly what it did live). The best revision is deployed only if its
+reward beats the incumbent's beyond resampling noise and it changes live behaviour
+without doing less work (deploy_checks). Every deployed version is archived.
 """
 from __future__ import annotations
 
@@ -14,7 +16,8 @@ import time
 from pathlib import Path
 
 from .guard import ALLOWED_MODULES
-from .replay import _run_once, evaluate_policy, resampled_reward
+from .replay import CURVES, SCORES, _run_once, evaluate_policy, resampled_reward
+from .worlds import informative
 
 SEED_POLICY = Path(__file__).resolve().parent / "policy" / "method.py"
 START, END = "# EVOLVE-BLOCK-START", "# EVOLVE-BLOCK-END"
@@ -22,7 +25,9 @@ START, END = "# EVOLVE-BLOCK-START", "# EVOLVE-BLOCK-END"
 API_NOTES = """Question API (all a policy may use):
 - question.reset(); question.observed() -> {id: Observation(id, parent_id, branch, attempt, seq, score, valid,
   fail_class, family)}; question.best_score(); question.baseline_score; question.max_parallelism;
-  question.probes (probes spent so far; each revealed one attempt); question.rounds (batches probed so far)
+  question.probes (probes spent so far; each revealed one attempt); question.rounds (batches probed so far).
+  Attempt ids ("a1", "a2", ...) say only the order attempts were revealed in; the question is the same in replay
+  and in a live round.
 - question.legal_actions() -> root slots ("root:<j>", open a new branch) + leaves of the revealed tree
 - question.legal_roots() -> the next available root slots
 - question.meta(cell) -> CellMeta(branch, attempt, parent_id, seq, tags)
@@ -73,23 +78,30 @@ def _params(cfg: dict) -> dict:
     while "support" was the default (or set to "realized") still stores it, and ranks by "live" (see config_warnings)."""
     W = cfg["search"]["W"]
     d = cfg["dream"]
+    score, curve = d.get("score", "default"), d.get("curve", "canonical")
     return {"W": W, "betas": d["betas"], "budget": cfg["search"]["K1"] * W, "lam": d["lambda"],
-            "beta1": d["beta1"], "beta2": d["beta2"], "score": d.get("score", "default"),
-            "penalty": "live", "curve": d.get("curve", "canonical")}
+            "beta1": d["beta1"], "beta2": d["beta2"], "score": score if score in SCORES else "default",
+            "penalty": "live", "curve": curve if curve in CURVES else "canonical"}
 
 
 def config_warnings(cfg: dict) -> list[str]:
-    p = cfg["dream"].get("penalty", "live")
-    if p == "live":
-        return []
-    return [f"dream.penalty = {p!r} is no longer supported (it paid for gains that do not exist live); ranking by "
-            f"'live'. Set it with: drsi config --set dream.penalty=live"]
+    d, out = cfg["dream"], []
+    p = d.get("penalty", "live")
+    if p != "live":
+        out.append(f"dream.penalty = {p!r} is no longer supported (it paid for gains that do not exist live); ranking "
+                   "by 'live'. Set it with: drsi config --set dream.penalty=live")
+    for key, allowed, default in (("score", SCORES, "default"), ("curve", CURVES, "canonical")):
+        v = d.get(key, default)
+        if v not in allowed:
+            out.append(f"dream.{key} = {v!r} is not one of {', '.join(allowed)}; ranking by {default!r}")
+    return out
 
 
-def gate_worlds(n: int, W: int, budget: int) -> list[dict]:
+def gate_worlds(n: int, W: int, budget: int, baseline: float = 0.0, lo: float = 0.0, hi: float = 1.0) -> list[dict]:
     """Synthetic live-like trees for the behaviour gate: more roots than a round can open and branches deeper
-    than a round can go, so (as live) no probe ever comes back empty. Scores are seeded: half the trees are
-    random walks, half independent draws, with a failure rate that varies per tree."""
+    than a round can go, so (as live) the record always answers. Scores are seeded: half the trees are random
+    walks, half independent draws, with a failure rate that varies per tree, placed in [lo, hi] over the campaign's
+    baseline so they read like the campaign's own."""
     import random
     out = []
     for k in range(n):
@@ -102,22 +114,23 @@ def gate_worlds(n: int, W: int, budget: int) -> list[dict]:
                 s = s + rng.gauss(0, 0.1) if walk else rng.random()
                 valid = rng.random() < p_valid
                 nid = f"g{k}r{r}d{dd}"
-                nodes.append({"id": nid, "parent": prev, "score": s if valid else None, "valid": valid,
+                nodes.append({"id": nid, "parent": prev, "score": lo + (hi - lo) * s if valid else None, "valid": valid,
                               "fail_class": "ok" if valid or rng.random() < 0.5 else "agent_error",
                               "family": "ABCDEF"[rng.randrange(6)]})
                 prev = nid
-        out.append({"id": f"gate{k}", "baseline": 0.0, "nodes": nodes})
+        out.append({"id": f"gate{k}", "baseline": baseline, "nodes": nodes})
     return out
 
 
-def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, timeout: int = 120) -> dict:
+def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, timeout: int = 120,
+                      worlds: list[dict] | None = None) -> dict:
     """Run both policies at their default beta on live-like trees; True when any batch differs as a set. A
     revision that changes nothing live (only what happens when recorded roots or branches run out) must not
     be deployed on its replay gain. Also returns each policy's total probes there, since a revision that spends less
     of a live round than the incumbent cannot be justified by replay (see deploy_checks)."""
     if n < 1:
         return {"ok": False, "error": "dream.gate_worlds must be at least 1 while dream.behaviour_gate is on"}
-    worlds = gate_worlds(n, W, budget)
+    worlds = gate_worlds(n, W, budget, *_campaign_scale(worlds or []))
     traces, probes = {}, {}
     with tempfile.TemporaryDirectory(prefix="drsi-gate-") as tmp:
         for label, path in (("cand", cand_path), ("inc", inc_path)):
@@ -131,6 +144,15 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
     same = sum(a == b for a, b in zip(traces["cand"], traces["inc"]))
     return {"ok": True, "differs": same < n, "identical_rounds": same, "rounds": n,
             "probes": probes["cand"], "incumbent_probes": probes["inc"]}
+
+
+def _campaign_scale(worlds: list[dict]) -> tuple[float, float, float]:
+    """The replay worlds' most common baseline and the range of their valid scores, for the gate's trees."""
+    from collections import Counter
+    bases = Counter(w.get("baseline", 0.0) for w in worlds)
+    vals = [n["score"] for w in worlds for n in w["nodes"] if n.get("valid") and n.get("score") is not None]
+    base = bases.most_common(1)[0][0] if bases else 0.0
+    return (base, min(vals), max(vals)) if len(vals) > 1 and min(vals) < max(vals) else (base, 0.0, 1.0)
 
 
 def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: list[dict], params: dict,
@@ -155,7 +177,8 @@ def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: li
         if not out["bootstrap_p05"] > margin:
             return out | {"ok": False, "why": f"gain within resampling noise (5th percentile {out['bootstrap_p05']:+.4f})"}
     if d.get("behaviour_gate", True):
-        g = behaviour_differs(cand_path, inc_path, params["W"], params["budget"], int(d.get("gate_worlds", 32)))
+        g = behaviour_differs(cand_path, inc_path, params["W"], params["budget"], int(d.get("gate_worlds", 32)),
+                              worlds=worlds)
         out["gate"] = g
         if not g.get("ok"):
             return out | {"ok": False, "why": g.get("error")}
@@ -216,9 +239,10 @@ Stopping: returning [] ends the rollout. Stopping early earns nothing (the curve
 each batch the budget had left counts as an empty batch in parallel_penalty.
 The trees hold only what earlier policies explored, so their ceiling is not a live stopping signal. Stop only
 after weighing every open branch, unopened root and repairable failure.
-Deployment: a revision replaces the incumbent only if it beats it on a paired bootstrap across the trees and it
-changes what the policy does in a live-like round (no branch ends), without spending fewer probes there than the
-incumbent.
+Deployment: the trees are the rounds the incumbent's replay reproduces exactly (its own); a revision replaces the
+incumbent only if it beats it on a paired bootstrap across them and it changes what the policy does in a live-like
+round, without spending fewer probes there than the incumbent. Work the record lacks counts as failed attempts, so
+a revision earns reward by reaching the recorded good attempts sooner, not by exploring where nothing was recorded.
 
 Prefix-only: decide only from what the question API reveals, `self.beta`, and your own bookkeeping.
 Never use unrevealed scores, hardcoded cell ids, tree-specific constants or absolute score targets.
@@ -266,6 +290,16 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
 
     inc_src = method.read_text()
     inc = evaluate_policy(method, worlds, **params)
+    worlds_total, on_record = len(worlds), None
+    if inc.get("ok"):
+        # Replay is what happened only where the record answers. The incumbent's replay stays on the record in every
+        # round it recorded itself, and there its value is exact; so policies are compared on those worlds alone (a
+        # candidate's unrecorded probes still count as failures, which errs toward keeping the incumbent).
+        rows = inc["measured"]["runs"][str(float(inc["default_beta"]))]
+        worlds = [w for w, row in zip(worlds, rows) if row["off_record"] == 0]
+        on_record = len(worlds)
+        if worlds and on_record < worlds_total:
+            inc = evaluate_policy(method, worlds, **params)
     inc_reward = inc["reward"] if inc.get("ok") else float("-inf")
     best_src, best_rep, best_reward = inc_src, inc, inc_reward
     inc_parts = split_evolve(inc_src)
@@ -273,9 +307,13 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
 
     best_path = method
     skipped = None
+    need = int(cfg["dream"].get("min_worlds", 4))
     if not inc.get("ok"):  # nothing can be compared with an incumbent that does not replay: keep it, call no one
         skipped = (f"the incumbent failed replay ({inc.get('stage', 'run')}: {inc.get('error', '')}); it is kept and "
                    "no revision is asked for")
+    elif informative(worlds) < need:  # too few to tell policies apart: a dream would spend developer calls on noise
+        skipped = (f"{informative(worlds)} of {worlds_total} world(s) can inform a dream with the incumbent's replay on "
+                   f"the record throughout, fewer than dream.min_worlds = {need}; the incumbent is kept")
     for m in range(0 if skipped else cfg["dream"]["M"]):
         with tempfile.TemporaryDirectory(prefix="drsi-dream-") as sb:
             sb = Path(sb)
@@ -312,7 +350,7 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
         if rep["reward"] > best_reward + 1e-12:
             best_src, best_rep, best_reward, best_path = new_src, rep, rep["reward"], cand
 
-    deployed = bool(inc.get("ok")) and best_src != inc_src and best_reward > inc_reward  # a tie keeps the incumbent
+    deployed = not skipped and best_src != inc_src and best_reward > inc_reward  # a tie keeps the incumbent
     checks = None
     if deployed:
         checks = deploy_checks(best_path, method, best_rep, inc, worlds, params, cfg["dream"])
@@ -326,6 +364,7 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     report = {"stamp": stamp, "deployed": deployed, "version": version, "incumbent_reward": inc_reward,
               "incumbent_ok": bool(inc.get("ok")), "incumbent_error": inc.get("error"),
               "best_reward": best_reward, "revisions": revisions, "worlds": [w["id"] for w in worlds],
+              "worlds_total": worlds_total, "worlds_on_record": on_record,
               "best_report": _strip(best_rep), "deploy_checks": checks, "skipped": skipped,
               "warnings": config_warnings(cfg)}
     log_dir.mkdir(parents=True, exist_ok=True)

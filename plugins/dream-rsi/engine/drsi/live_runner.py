@@ -15,7 +15,7 @@ def main() -> None:
     engine, job_path, req_fd, resp_fd = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
     sys.path.insert(0, engine)
     from drsi.guard import safe_builtins
-    from drsi.question import QuestionBase
+    from drsi.question import PolicyQuestion, QuestionBase
 
     requests = os.fdopen(req_fd, "wb", buffering=0)
     answers = os.fdopen(resp_fd, "rb")
@@ -37,7 +37,7 @@ def main() -> None:
         ns = {"__name__": "drsi_policy", "__builtins__": safe_builtins()}
         exec(compile(job["source"], job["label"], "exec"), ns)  # the orchestrator guard-checked this source
         q = RemoteQuestion(job["W"], job["baseline"], max_probes=job["budget"])
-        ns["OptimalPolicy"]().solve(q, budget=job["budget"])
+        ns["OptimalPolicy"]().solve(PolicyQuestion(q), budget=job["budget"])  # the view replay hands it too
         send({"op": "done"})
     except BaseException as e:  # noqa: BLE001 - any policy failure (even SystemExit) ends the round
         send({"op": "error", "error": f"{type(e).__name__}: {e}"[:2000]})
