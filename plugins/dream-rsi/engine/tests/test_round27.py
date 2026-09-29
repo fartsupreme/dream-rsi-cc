@@ -10,6 +10,10 @@ and the rest of the budget counts as empty batches. A policy cannot catch the en
 nothing it does afterwards counts. So a candidate's replay never scores above what the same policy does live on the
 same attempts, and the incumbent, compared on its own rounds, never reaches the end.
 
+The review of round 26 (Opus) found a live round ran policies at hash seed 0, the gate and replay at 1 and 2: a policy
+reading the seed through set iteration order acted honestly in every check and made no attempt live. Every policy
+process now runs at POLICY_HASH_SEED, and the second replay run's other seed catches any behaviour keyed to it.
+
 Novelty check: a citation of an attempt's own id (not the label it was shown under) resolved through the flattened
 labels, so the fullwidth "Ａ7" reached "A7", and an id longer than its label reached nothing; an exact id is now
 matched before the labels, and the judge is told to cite by the label.
@@ -185,6 +189,63 @@ class CiteByIdTest(unittest.TestCase):
 
     def test_the_judge_is_told_to_cite_by_label(self):
         self.assertIn("label", JUDGE_RULES)
+
+
+KEYS = ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel")
+
+
+def first_key_at(seed: int) -> str:
+    import os
+    import subprocess
+    import sys
+    code = f"print(list(frozenset({KEYS!r}))[0])"
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                          env={"PYTHONHASHSEED": str(seed), "PATH": os.environ.get("PATH", "")}).stdout.strip()
+
+
+class HashSeedTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def keyed(self, seed):
+        """All roots, unless the set order is the one hash seed `seed` gives: then stop."""
+        block = ALLROOTS.replace(
+            "        roots = question.legal_roots()\n",
+            f"        roots = question.legal_roots()\n        if list(frozenset({KEYS!r}))[0] == {first_key_at(seed)!r}:\n"
+            "            return []\n")
+        assert block != ALLROOTS
+        return write(self.root, f"keyed{seed}.py", with_block(block)(SEED_POLICY.read_text()))
+
+    def test_a_policy_keyed_to_another_seed_acts_live_as_in_replay(self):
+        from drsi.live import LiveRunner, live_round, load_policy
+        from drsi.store import Campaign
+        from tests.test_live import SCORER, stub_worker
+        from tests.test_scorer_workspace import make_repo
+        self.assertNotEqual(first_key_at(0), first_key_at(1))  # the review's exploit keyed on seed 0, then live's
+        pol = self.keyed(0)
+        rep = evaluate_policy(pol, [chain_world(6, 3)], W=2, betas=[], budget=4, lam=0.25, beta1=0.01, beta2=0.01)
+        self.assertTrue(rep["ok"], rep)
+        replay_cells = [c for b in rep["traces"]["runs"][str(float(rep["default_beta"]))][0]["trace"] for c in b]
+        camp = Campaign.create("toy", {
+            "goal": "maximise value.txt", "scorer": {"cmd": SCORER, "timeout_s": 30},
+            "workspace": {"repo": str(make_repo(self.root)), "mutable": ["value.txt"]},
+            "search": {"W": 2, "K1": 2, "plateau": 3}, "live": {"require_check": False}}, home=self.root / "home")
+        runner = LiveRunner(camp, stub_worker(), indexer=lambda ids: None, round_id="iter0001")
+        live_round(camp, load_policy(pol), runner)
+        live_cells = [camp.tree.get(i)["ext"].get("cell") for i in runner.ids]
+        self.assertEqual(live_cells, replay_cells)
+
+    def test_behaviour_keyed_to_the_policy_seed_itself_fails_replay(self):
+        from drsi.question import POLICY_HASH_SEED
+        if first_key_at(POLICY_HASH_SEED) == first_key_at(POLICY_HASH_SEED + 1):
+            self.skipTest("these keys iterate alike at both replay seeds")
+        rep = evaluate_policy(self.keyed(POLICY_HASH_SEED), [chain_world(6, 3)], W=2, betas=[], budget=4, lam=0.25,
+                              beta1=0.01, beta2=0.01)
+        self.assertEqual((rep["ok"], rep.get("stage")), (False, "determinism"), rep)
 
 
 if __name__ == "__main__":

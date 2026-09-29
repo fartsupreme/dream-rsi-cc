@@ -154,8 +154,10 @@ expect a campaign's first rounds to find its loopholes.
     own process can change its score.
   - The question enforces the probe budget exactly and forbids re-entrant probes and `reset()` after probing.
   - Replay, the behaviour gate and a live round hand the policy the same view: attempts are shown under ids that
-    say only when they were revealed (`a1`, `a2`, ...), the question prints as `<question>`, and the policy is built
-    with no argument at its default beta, as a live round builds it.
+    say only when they were revealed (`a1`, `a2`, ...), the question prints as `<question>`, the policy is built
+    with no argument at its default beta, as a live round builds it, and every policy process runs at one hash seed
+    (a policy can read the seed through set order; the second replay run uses another seed, and a policy whose
+    traces differ between the two runs is refused).
   - In a live round the policy runs in a child process. The orchestrator validates every batch on its own
     copy of the question and runs the attempts. If the policy thinks longer than `live.think_timeout_s`
     between batches, the orchestrator kills the child's process group, and no handler or `finally` block in
@@ -224,9 +226,12 @@ expect a campaign's first rounds to find its loopholes.
     nothing.
   - Reaching good attempts sooner scores higher even when every run explores the whole world.
   - Worlds without a single valid reachable score can't favour any policy.
-- **Deploying a revision:** replay is exact only where the record answers. The incumbent's replay stays on the
-  record in every round it recorded itself, so policies are compared on the worlds where it does (on any other
-  world, replay would credit whichever policy resembles the one that recorded it). A candidate that probes past the
+- **Deploying a revision:** replay is exact only where the record answers. Policies are compared on the worlds
+  where the incumbent's replay stays on the record (every round it recorded itself, and any other whose record
+  covers its whole path): there its value is exact, and a candidate's run, which ends at its first probe past the
+  record, can only score below what it does live on the same attempts, so a candidate that wins there does better
+  live on them. On a world the incumbent leaves, its own replay would be cut short and any candidate resembling the
+  world's recorder would look better. A candidate that probes past the
   record ends its run there, which errs toward keeping the incumbent: a revision that explores where the record is
   thin looks no better than the incumbent, and a revision the record can vouch for (one that reaches the
   incumbent's own best attempts sooner, say) deploys. Strictly better replay reward is not enough: the 5th

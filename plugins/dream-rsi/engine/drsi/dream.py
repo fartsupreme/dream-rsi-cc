@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from .guard import ALLOWED_MODULES
+from .question import POLICY_HASH_SEED
 from .replay import CURVES, SCORES, _run_once, evaluate_policy, resampled_reward
 from .worlds import informative
 
@@ -136,7 +137,7 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
     with tempfile.TemporaryDirectory(prefix="drsi-gate-") as tmp:
         for label, path in (("cand", cand_path), ("inc", inc_path)):
             res = _run_once({"policy": str(Path(path).resolve()), "worlds": worlds, "W": W, "betas": [],
-                             "budget": budget}, Path(tmp), 1, timeout)
+                             "budget": budget}, Path(tmp), POLICY_HASH_SEED, timeout)
             if not res.get("ok"):
                 return {"ok": False, "error": f"{label} fails on live-like trees: {res.get('error')}"}
             rows = res["runs"][str(float(res["default_beta"]))]
@@ -293,9 +294,11 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     inc = evaluate_policy(method, worlds, **params)
     worlds_total, on_record = len(worlds), None
     if inc.get("ok"):
-        # Replay is what happened only where the record answers. The incumbent's replay stays on the record in every
-        # round it recorded itself, and there its value is exact; so policies are compared on those worlds alone (a
-        # candidate's unrecorded probes still count as failures, which errs toward keeping the incumbent).
+        # Replay is what happened only where the record answers. Where the incumbent's replay stays on the record
+        # (every round it recorded itself, and any other whose record covers its whole path) its value is exact, and
+        # a candidate's run, which ends at its first probe past the record, can only score below what it does live on
+        # the same attempts. So policies are compared on those worlds alone: a candidate that beats the incumbent
+        # there does better live on the same attempts.
         rows = inc["measured"]["runs"][str(float(inc["default_beta"]))]
         worlds = [w for w, row in zip(worlds, rows) if row["off_record"] == 0]
         on_record = len(worlds)

@@ -26,6 +26,12 @@ class IllegalBatch(ValueError):
     pass
 
 
+# The hash seed every policy process runs at: a live round, the behaviour gate and the first replay run alike. A policy
+# can read the seed through set iteration order, so a live round at another seed could act on what no check sees;
+# the second replay run uses another seed only to catch exactly that (its traces must match the first run's).
+POLICY_HASH_SEED = 1
+
+
 class RecordEnd(BaseException):
     """A replayed run reached the end of its record. Not an Exception, so a policy (which may catch only Exception
     or narrower) cannot catch it and go on; the runner that started the policy does."""
