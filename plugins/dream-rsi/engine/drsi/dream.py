@@ -33,9 +33,10 @@ API_NOTES = """Question API (all a policy may use):
 - question.meta(cell) -> CellMeta(branch, attempt, parent_id, seq, tags)
 - question.probe_batch(cells, on_reveal=...) -> reveals one child per cell. A batch must be non-empty,
   duplicate-free, at most max_parallelism long, and contain only legal actions.
-Replay rules: a root slot reveals the next recorded root and a leaf its recorded child. Past the record (a root
-slot beyond the recorded roots, a leaf beyond the end of its recorded branch) a probe reveals a failed attempt, as a
-live attempt can fail: no score, not valid. Only leaves and root slots are actions.
+Replay rules: a root slot reveals the recorded root opened in that slot and a leaf its recorded child. Past the
+record (a root slot beyond the recorded roots, a leaf beyond the end of its recorded branch) that tree's replay
+ends: the probe reveals nothing, and the rest of the budget counts as empty batches, since replay cannot know what
+that work would have found. Only leaves and root slots are actions.
 """
 
 
@@ -215,9 +216,9 @@ def render_report(rep: dict, revisions: list[dict]) -> str:
 
 
 PENALTY_TEXT = ("parallel_penalty = 1 - mean batch fill, where a batch's fill is the cells it probes out of "
-                "max_parallelism: live every probe is an attempt. Root slots never run out, as live; past the tree's "
-                "record (a root slot beyond its recorded roots, a leaf beyond the end of its recorded branch) a probe "
-                "reveals a failed attempt, since the tree holds only what was recorded.")
+                "max_parallelism: live every probe is an attempt. Root slots never run out, as live; a probe past the "
+                "tree's record (a root slot beyond its recorded roots, a leaf beyond the end of its recorded branch) "
+                "ends that tree's replay, and the budget left counts as empty batches.")
 
 
 def build_prompt(cfg: dict) -> str:
@@ -241,8 +242,8 @@ The trees hold only what earlier policies explored, so their ceiling is not a li
 after weighing every open branch, unopened root and repairable failure.
 Deployment: the trees are the rounds the incumbent's replay reproduces exactly (its own); a revision replaces the
 incumbent only if it beats it on a paired bootstrap across them and it changes what the policy does in a live-like
-round, without spending fewer probes there than the incumbent. Work the record lacks counts as failed attempts, so
-a revision earns reward by reaching the recorded good attempts sooner, not by exploring where nothing was recorded.
+round, without spending fewer probes there than the incumbent. Work the record lacks ends the replay, so a revision
+earns reward by reaching the recorded good attempts sooner, not by exploring where nothing was recorded.
 
 Prefix-only: decide only from what the question API reveals, `self.beta`, and your own bookkeeping.
 Never use unrevealed scores, hardcoded cell ids, tree-specific constants or absolute score targets.

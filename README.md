@@ -196,13 +196,14 @@ expect a campaign's first rounds to find its loopholes.
 - **Replay:** a leaf reveals its first recorded child. Only leaves and root slots are actions
   (A(T) = {r} ∪ leaves), so siblings under an interior node are unreachable in replay. A world's target and its work
   normalisation are therefore computed over reachable attempts only. Replay shows a policy exactly what a live round
-  would: root slots never run out, and past the record (a root slot beyond the recorded roots, a leaf beyond the end
-  of its recorded branch) a probe reveals a failed attempt, with no score and the world's usual failure class, which
-  can be continued like any other. Recorded roots open in the slots they were opened in live (each attempt keeps
-  its cell), so a policy replaying a round it ran meets every attempt where it met it. Replay can value only what
-  was recorded, in breadth and in depth alike; nothing in the view a policy gets tells it where the record ends
-  (only the scores can: a ground truth the record lacks is not something replay can supply). Ranking always runs
-  under a budget (K1 × W probes per world, as a live round).
+  would, and root slots never run out. Replay can value only what was recorded, in breadth and in depth alike, so
+  the first probe past the record (a root slot beyond the recorded roots, a leaf beyond the end of its recorded
+  branch) ends that run: the batch's recorded cells count, the probes past the record cost budget and reveal
+  nothing, and the rest of the budget counts as empty batches. The policy cannot catch the end, and nothing it
+  could learn past the record counts, so a replayed run never scores above what the same policy does live on the
+  same attempts. Recorded roots open in the slots they were opened in live (each attempt keeps its cell), so a
+  policy replaying a round it ran meets every attempt where it met it. Ranking always runs under a budget
+  (K1 × W probes per world, as a live round).
 - **Reward:** the paper states Eq. 1 `V = max s_v − β1·N + β2·N/max(1,k)` in its method section but ranks
   policies by `pareto.auc − λ · parallel_penalty` over a beta sweep in the prompt it ran (Appendix B.2); the two
   disagree. Here Eq. 1 (with attainment for s_v, β1 = β2 = 0.01) is reported, and policies are ranked by an
@@ -225,9 +226,9 @@ expect a campaign's first rounds to find its loopholes.
   - Worlds without a single valid reachable score can't favour any policy.
 - **Deploying a revision:** replay is exact only where the record answers. The incumbent's replay stays on the
   record in every round it recorded itself, so policies are compared on the worlds where it does (on any other
-  world, replay would credit whichever policy resembles the one that recorded it). A candidate's probes past the
-  record count as failures there, which errs toward keeping the incumbent: a revision that explores where the
-  record is thin looks no better than the incumbent, and a revision the record can vouch for (one that reaches the
+  world, replay would credit whichever policy resembles the one that recorded it). A candidate that probes past the
+  record ends its run there, which errs toward keeping the incumbent: a revision that explores where the record is
+  thin looks no better than the incumbent, and a revision the record can vouch for (one that reaches the
   incumbent's own best attempts sooner, say) deploys. Strictly better replay reward is not enough: the 5th
   percentile of a paired bootstrap of the reward difference across those worlds must exceed `dream.margin`, and
   the revision must change what the policy does on live-like trees without spending fewer probes there than the

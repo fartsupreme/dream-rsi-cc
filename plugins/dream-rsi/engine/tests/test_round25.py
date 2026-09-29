@@ -14,6 +14,8 @@ Dream step:
   as the dream step does.
 - The clock curve skipped batches the record could not answer; every batch is a live batch.
 - evaluate_policy with no budget capped the roots again, where stopping after the roots paid; a budget is required.
+(Round 27 replaced the made-up failed attempt past the record with the end of the run: the tests of it
+moved there.)
 Novelty check:
 - flattened display labels could collide (a width variant, a format character, a long id), so a citation reached
   another record; every shown attempt and in-flight proposal now has its own label, mapped back to its own id;
@@ -64,66 +66,11 @@ def write(d, name, src) -> Path:
 
 
 class ReplayAsLiveTest(unittest.TestCase):
-    def test_a_probe_past_the_recorded_roots_reveals_a_failed_attempt(self):
-        q = ReplayQuestion(chain_world(2, 2), 4, max_probes=8)
-        out = q.probe_batch(["root:0", "root:1", "root:2", "root:3"])
-        self.assertTrue(all(o is not None for o in out))
-        for o in out[2:]:
-            self.assertFalse(o.valid)
-            self.assertIsNone(o.score)
-            self.assertTrue(o.fail_class)
-            self.assertIsNone(o.parent_id)
-        self.assertEqual(q.probes, len(q.observed()))
-        roots = {o.branch for o in q.observed().values() if o.parent_id is None}
-        self.assertEqual(set(q.opened_branches()), roots)
-
-    def test_a_leaf_past_its_branch_end_reveals_a_failed_child_that_can_be_continued(self):
-        q = ReplayQuestion(chain_world(1, 2), 4, max_probes=6)
-        leaf = q.probe_batch(["root:0"])[0].id
-        for _ in range(5):
-            self.assertIn(leaf, q.legal_actions())
-            child = q.probe_batch([leaf])[0]
-            self.assertIsNotNone(child)
-            self.assertEqual(child.parent_id, leaf)
-            self.assertNotIn(leaf, q.legal_actions())
-            leaf = child.id
-        self.assertEqual(q.probes, len(q.observed()))
-        self.assertFalse(child.valid)
-
-    def test_probes_always_equal_the_attempts_observed(self):
-        rng = random.Random(0)
-        for world in chain_worlds() + many_root_worlds(n=1, roots=5):
-            q = ReplayQuestion(world, 4, max_probes=24)
-            while q.probes < 24:
-                acts = q.legal_actions()
-                q.probe_batch(rng.sample(acts, min(len(acts), rng.randint(1, 4))))
-                self.assertEqual(q.probes, len(q.observed()))
-
-    def test_the_failure_class_is_the_trees_own(self):
-        w = chain_world(1, 1)
-        w["nodes"] += [{"id": "x1", "parent": None, "score": None, "valid": False, "fail_class": "agent_error"},
-                       {"id": "x2", "parent": None, "score": None, "valid": False, "fail_class": "agent_error"},
-                       {"id": "x3", "parent": None, "score": None, "valid": False, "fail_class": "eval_error"}]
-        q = ReplayQuestion(w, 8, max_probes=8)
-        out = q.probe_batch([f"root:{j}" for j in range(6)])
-        self.assertEqual({o.fail_class for o in out[4:]}, {"agent_error"})
-
     def test_the_question_shows_a_policy_only_what_a_live_question_has(self):
         def public(cls):
             return {n for n in dir(cls) if not n.startswith("_")}
         self.assertEqual(public(ReplayQuestion), public(LiveQuestion))
 
-    def test_revealed_ids_never_repeat_a_recorded_id(self):
-        w = chain_world(2, 2)
-        w["nodes"].append({"id": "chains-001", "parent": None, "score": 0.1, "valid": True})
-        q = ReplayQuestion(w, 4, max_probes=12)
-        q.probe_batch(["root:0", "root:1", "root:2", "root:3"])
-        q.probe_batch(["root:4", "root:5", "root:6", "root:7"])
-        self.assertEqual(len(q.observed()), 8)  # observed() is keyed by id: a repeated id would hide an attempt
-        self.assertEqual(q.observed()["chains-001"].score, 0.1)  # the recorded attempt, not one made past the record
-
-
-class ReplayGainTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.worlds = chain_worlds() + many_root_worlds(n=2)

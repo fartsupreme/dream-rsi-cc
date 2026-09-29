@@ -30,7 +30,7 @@ from pathlib import Path
 from unittest import mock
 
 from drsi.dream import SEED_POLICY, deploy_checks, run_dream, split_evolve
-from drsi.question import IllegalBatch, ReplayQuestion
+from drsi.question import IllegalBatch, RecordEnd, ReplayQuestion
 from drsi.replay import evaluate_policy
 from drsi.reward import live_penalty
 from tests import test_round18
@@ -86,18 +86,16 @@ def many_root_worlds(n=4, roots=40):
 class LiveLikeReplayTest(unittest.TestCase):
     def test_root_slots_do_not_run_out(self):
         q = ReplayQuestion(chain_world(2, 2), 4, max_probes=10)
-        self.assertEqual(q.legal_roots(), ["root:0", "root:1", "root:2", "root:3"])
-        out = q.probe_batch(["root:0", "root:1", "root:2", "root:3"])
-        self.assertEqual([o.valid for o in out], [True, True, False, False])  # round 25: a failed attempt past the record
-        self.assertEqual(len(q.legal_roots()), 4)  # still four fresh slots, as live
+        self.assertEqual(q.legal_roots(), ["root:0", "root:1", "root:2", "root:3"])  # as live
+        with self.assertRaises(RecordEnd):  # round 27: a slot past the recorded roots ends the run
+            q.probe_batch(["root:0", "root:1", "root:2", "root:3"])
+        self.assertEqual(len(q.observed()), 2)
 
     def test_every_probe_costs_budget_revealing_or_not(self):
         q = ReplayQuestion(chain_world(2, 2), 4, max_probes=3)
-        q.probe_batch(["root:2", "root:3"])  # two slots past the two recorded roots
-        self.assertEqual(q.legal_roots(), ["root:0", "root:1", "root:4", "root:5"])
-        q.probe_batch(["root:4"])
-        with self.assertRaises(IllegalBatch):  # three probes past the record spent the budget of three
-            q.probe_batch(["root:0"])
+        with self.assertRaises(RecordEnd):  # two slots past the two recorded roots: the run ends there
+            q.probe_batch(["root:2", "root:3"])
+        self.assertEqual(q.probes, 2)  # and they cost budget
 
     def test_the_penalty_is_live_fill_with_unspent_batches_empty(self):
         self.assertAlmostEqual(live_penalty([4, 4, 2], 4, unspent=1), 1 - (1 + 1 + 0.5 + 0) / 4)
@@ -134,7 +132,7 @@ class ReplayGainsTest(unittest.TestCase):
         self.assertLess(self.reward(stop_after_roots, w)[0], self.seed_reward(w)[0])
 
     def test_dropping_the_plateau_rule_does_not_outscore_the_seed(self):
-        w = roots_best_worlds()
+        w = own_worlds(SEED_POLICY.read_text(), 4, 24, plateau=True)  # round 27: where the seed's replay is exact
         self.assertLessEqual(self.reward(no_plateau, w)[0], self.seed_reward(w)[0] + 1e-9)
         pdir = self.root / "policy"
         pdir.mkdir()
