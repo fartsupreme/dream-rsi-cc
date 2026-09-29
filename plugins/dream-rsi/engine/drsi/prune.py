@@ -59,6 +59,9 @@ def prune(camp: Campaign, ids: set[str] | None = None, error_match: str | None =
            "reparented": [n["id"] for n in tree.nodes() if n["parent"] in gone and n["id"] not in gone],
            "worlds_removed": [], "worlds_rewritten": []}
     if dry_run or not victims:
+        if not dry_run:  # a rerun after a failure past the tree step still refreshes the map
+            from .live import write_map
+            write_map(camp)
         return rep
     # The tree goes last: it is what selects the victims, so every step before it can simply be repeated by a rerun
     # if one fails, and nothing is left pointing at attempts the tree no longer has.
@@ -114,20 +117,20 @@ def prune(camp: Campaign, ids: set[str] | None = None, error_match: str | None =
         have = set(ws._in_repo("branch", "--list", "drsi/*", "--format=%(refname:short)", check=False).split())
         doomed = [f"drsi/{nid}" for nid in victims if f"drsi/{nid}" in have]
         for k in range(0, len(doomed), 200):
-            ws._in_repo("branch", "-D", "-q", *doomed[k:k + 200], check=False)
+            ws._in_repo("branch", "-D", "-q", *doomed[k:k + 200])  # a failure stops the prune before the tree
     for nid in victims:
         d = work / "_proposals" / nid
         if d.is_dir():
             shutil.rmtree(d)
 
-    rep["reparented"] = tree.prune(gone)
-    logp = camp.root / "logs" / "prune.jsonl"
+    logp = camp.root / "logs" / "prune.jsonl"  # before the tree: the ids stay reserved even if what follows fails
     logp.parent.mkdir(parents=True, exist_ok=True)
     with open(logp, "a") as fh:
         fh.write(json.dumps({"at": utcnow(), "ids": victims, "reason": reason,
                              "criteria": {"ids": sorted(ids) if ids else None, "error_match": error_match},
                              "reparented": rep["reparented"], "worlds_removed": rep["worlds_removed"],
                              "worlds_rewritten": rep["worlds_rewritten"]}, ensure_ascii=True) + "\n")
+    rep["reparented"] = tree.prune(gone)
     from .live import write_map
     write_map(camp)
     log(f"pruned {len(victims)} attempts that did no work")

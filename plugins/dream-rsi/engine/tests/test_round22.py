@@ -47,7 +47,7 @@ from tests.test_round20 import FAMS, judge_prompt, llm, nearest_section, tree
 from tests.helpers import ScriptedLLM
 from drsi.novelty import check
 from drsi.store import make_node
-from tests.test_round18 import PruneTest
+from tests import test_round18  # the module, so its tests are not collected again here
 
 KW = dict(W=4, betas=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0], budget=24, lam=0.25, beta1=0.01, beta2=0.01)
 PARAMS = {k: v for k, v in KW.items() if k != "betas"} | {"score": "default", "penalty": "support",
@@ -284,7 +284,7 @@ class NoveltyReviewTest(unittest.TestCase):
 
 class PruneReviewTest(unittest.TestCase):
     def setUp(self):
-        self.p = PruneTest()
+        self.p = test_round18.PruneTest()
         self.p.setUp()
         self.camp = self.p.camp
         self.p.fixture()

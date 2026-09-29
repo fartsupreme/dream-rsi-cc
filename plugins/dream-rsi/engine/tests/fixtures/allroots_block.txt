@@ -1,0 +1,18 @@
+    # EVOLVE-BLOCK-START
+    def select_batch(self, question, closed, state):
+        W = question.max_parallelism
+        roots = question.legal_roots()
+        if roots:
+            return roots[:W]
+        by_branch = {}
+        for o in sorted(question.observed().values(), key=lambda o: o.seq):
+            by_branch.setdefault(o.branch, []).append(o)
+        ranked = []
+        for cell in question.legal_actions():
+            hist = by_branch.get(question.meta(cell).branch, [])
+            s = [o.score for o in hist if o.valid and o.score is not None]
+            slope = (s[-1] - s[0]) / len(s) if len(s) > 1 else (s[-1] if s else float("-inf"))
+            ranked.append((slope, -question.meta(cell).branch, cell))
+        ranked.sort(reverse=True)
+        return [c for _, _, c in ranked[:W]]
+    # EVOLVE-BLOCK-END

@@ -133,9 +133,10 @@ class DeploySupportTest(unittest.TestCase):
         out = deploy_checks(b, a, {}, {}, self.worlds, params, {"bootstrap": 0, "gate_worlds": 8})
         self.assertFalse(out["ok"], out)
         self.assertIn("no change in live behaviour", out["why"])
-        c = Path(self.tmp.name) / "c.py"  # a live change that spends the whole round passes (round 22: stopping early
-        c.write_text(serial_policy())      # does not, since it does less work live)
-        self.assertTrue(deploy_checks(c, a, {}, {}, self.worlds, params, {"bootstrap": 0, "gate_worlds": 4})["ok"])
+        c = Path(self.tmp.name) / "c.py"  # a live change that spends the whole round and continues branches passes: the
+        c.write_text(serial_policy())      # seed replacing a serial incumbent (round 22: stopping early does not; round 23:
+        self.assertTrue(deploy_checks(a, c, {}, {}, self.worlds, params,  # a revision that never continues does not)
+                                      {"bootstrap": 0, "gate_worlds": 4})["ok"])
 
     def test_a_gain_within_resampling_noise_is_refused(self):
         a, b = Path(self.tmp.name) / "a.py", Path(self.tmp.name) / "b.py"
