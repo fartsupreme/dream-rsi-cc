@@ -109,8 +109,9 @@ def _query_fingerprint(llm, proposal: str, goal: str) -> str:
 
 
 def _flat(text, cap: int) -> str:
-    """One line, capped: record text can hold anything, and a line of its own could pose as a prompt heading."""
-    return " ".join(str(text or "").split())[:cap]
+    """One line, capped, with fence markers broken: record text can hold anything, and a line of its own (or a fence
+    marker) could pose as the prompt's own structure."""
+    return re.sub(r"<{3,}|>{3,}", lambda m: m.group(0)[:2], " ".join(str(text or "").split()))[:cap]
 
 
 def _record(node: dict) -> str:
@@ -142,9 +143,10 @@ def _brief(node: dict) -> dict:
 
 
 def _line(b: dict) -> str:
-    return (f"#{b['id']} [{b['family'] or '?'}] {b['outcome'] or '?'}"
-            f"{' — stopped by ' + b['killed_by'] if b['killed_by'] else ''}: {b['mechanism'] or b['proposal']}"
-            f"{' (why: ' + b['why'] + ')' if b['why'] else ''}")
+    killed, why = _flat(b["killed_by"], 200), _flat(b["why"], 300)
+    return (f"#{b['id']} [{_flat(b['family'], 20) or '?'}] {_flat(b['outcome'], 20) or '?'}"
+            f"{' — stopped by ' + killed if killed else ''}: {_flat(b['mechanism'] or b['proposal'], 300)}"
+            f"{' (why: ' + why + ')' if why else ''}")
 
 
 def _norm(text: str) -> str:
@@ -233,15 +235,16 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
                 family_members.append(tree.get(mid))
                 shown.add(mid)
 
-    table = "\n".join(f"{s['id']} | {s['name']} | n={s['n']} | {s['status']} | stopped by: {s['killed_by_top'] or '-'}"
-                      + (f"; also {s['killed_by_next']}" if s.get("killed_by_next") else "")
+    table = "\n".join(f"{s['id']} | {_flat(s['name'], 120)} | n={s['n']} | {s['status']} | stopped by: "
+                      f"{_flat(s['killed_by_top'], 200) or '-'}"
+                      + (f"; also {_flat(s['killed_by_next'], 200)}" if s.get("killed_by_next") else "")
                       for s in stats.values())
     prompt = (f"Campaign goal: {goal or '(not stated)'}\n\n{JUDGE_RULES}\n"
               f"FAMILIES (id | name | attempts | status | most common stoppers)\n{table or '(none yet)'}\n\n"
               "NEAREST PRIOR ATTEMPTS\n" + ("\n".join(_line(_brief(h)) for h in hits) or "(none)") + "\n\n"
               "RECENT ATTEMPTS IN THOSE FAMILIES\n" + ("\n".join(_line(_brief(m)) for m in family_members) or "(none)") +
               "\n\nIN-FLIGHT PROPOSALS (claimed by parallel workers, not recorded yet; cite each by its label, pending:<id>)\n" +
-              ("\n".join(f"pending:{_plabel(p)}: {' '.join(p['proposal'].split())[:400]}" for p in pending) or "(none)") +
+              ("\n".join(f"pending:{_plabel(p)}: {_flat(p['proposal'], 400)}" for p in pending) or "(none)") +
               f"\n\nPROPOSAL\n{proposal}\n")
     out = llm.json(prompt, JUDGE_SCHEMA)
 
@@ -268,7 +271,6 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
             return "a retry of an attempt whose mechanism was measured is a repeat"
         return ""
 
-    barred = False  # a duplicate the retry rules made: the judge itself named the attempt it repeats
     if verdict == "variant" and not differs:
         verdict, rule = "duplicate", "a variant must state its concrete difference from the nearest attempt"
     elif verdict == "variant" and not addresses:
@@ -278,11 +280,11 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
         if retry_of not in shown or retry_of not in tree:
             verdict, rule = "duplicate", "a retry must name the prior attempt it fixes, among those the check showed"
         elif retry_bar(retry_of):
-            verdict, rule, barred = "duplicate", retry_bar(retry_of), True
+            verdict, rule = "duplicate", retry_bar(retry_of)
     if verdict != "retry":
         retry_of = ""
     confirmation = None
-    if verdict == "duplicate" and confirm and not barred:
+    if verdict == "duplicate" and confirm and out["verdict"] == "duplicate":  # a duplicate a rule made is final
         raw = [str(i).strip().lstrip("#") for i in out.get("nearest_ids", [])]
         cited_pending = [i for i in dict.fromkeys(raw) if i in shown_pending]
         cited_ids = [i for i in dict.fromkeys(raw) if i in shown and i in tree]
@@ -311,7 +313,11 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
                 verdict, retry_of = "retry", same
                 rule = f"overturned by the confirmation pass (a located fix): {why}"
         elif v2 in ("off_target", "variant", "novel"):
-            if not differs2:
+            named = next((x for x in (same, f"pending:{same}") if x in cited_ids or x in cited_pending), "")
+            if named:
+                rule = (f"the confirmation proposed {v2} but named {'#' + named if named in cited_ids else named} as "
+                        "the attempt it repeats; the duplicate stands")
+            elif not differs2:
                 rule = f"the confirmation proposed {v2} but named no difference; the duplicate stands"
             else:
                 addresses = bool(confirmation.get("addresses_recorded_stopper"))

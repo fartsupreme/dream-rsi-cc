@@ -107,7 +107,7 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
     if n < 1:
         return {"ok": False, "error": "dream.gate_worlds must be at least 1 while dream.behaviour_gate is on"}
     worlds = gate_worlds(n, W, budget)
-    traces, probes = {}, {}
+    traces, probes, batches, continued = {}, {}, {}, {}
     with tempfile.TemporaryDirectory(prefix="drsi-gate-") as tmp:
         for label, path in (("cand", cand_path), ("inc", inc_path)):
             res = _run_once({"policy": str(Path(path).resolve()), "worlds": worlds, "W": W, "betas": [],
@@ -117,9 +117,14 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
             rows = res["runs"][str(float(res["default_beta"]))]
             traces[label] = [[sorted(b) for b in row["trace"]] for row in rows]
             probes[label] = sum(len(b) for row in rows for b in row["trace"])
+            batches[label] = sum(1 for row in rows for b in row["trace"] if b)
+            continued[label] = sum(1 for row in rows for b in row["trace"] for c in b if not c.startswith("root:"))
     same = sum(a == b for a, b in zip(traces["cand"], traces["inc"]))
+    fill = {k: probes[k] / (max(1, batches[k]) * W) for k in probes}  # live, every probe is an attempt
     return {"ok": True, "differs": same < n, "identical_rounds": same, "rounds": n,
-            "probes": probes["cand"], "incumbent_probes": probes["inc"]}
+            "probes": probes["cand"], "incumbent_probes": probes["inc"], "fill": round(fill["cand"], 4),
+            "incumbent_fill": round(fill["inc"], 4), "continuations": continued["cand"],
+            "incumbent_continuations": continued["inc"]}
 
 
 def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: list[dict], params: dict,
@@ -127,7 +132,10 @@ def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: li
     """The candidate must beat the incumbent beyond resampling noise (paired bootstrap across worlds: the 5th
     percentile of the reward difference must exceed dream.margin), must change live behaviour, and must not spend
     less of a live round than the incumbent: replay can only reveal what was recorded, so it cannot see what the
-    work a revision gives up would have found."""
+    work a revision gives up would have found. Replay also offers only the recorded roots, where live offers new ones
+    without end, so two gains are checked against live-like trees: a gain only in the parallel penalty must show as
+    fuller batches there, and a revision that never continues a branch there (where the incumbent does) earned its
+    replay gain in a phase, after the recorded roots ran out, that it never reaches live."""
     import random
     B, margin = int(d.get("bootstrap", 500)), float(d.get("margin", 0.0))
     kw = {k: params[k] for k in ("W", "lam", "beta1", "beta2", "score", "penalty", "curve")}
@@ -154,6 +162,15 @@ def deploy_checks(cand_path, inc_path, cand_rep: dict, inc_rep: dict, worlds: li
             return out | {"ok": False, "why": f"less work live: {g['probes']} probes against the incumbent's "
                                                f"{g['incumbent_probes']} on live-like trees, and replay cannot value "
                                                "work beyond the record"}
+        if g["continuations"] == 0 and g["incumbent_continuations"] > 0:
+            return out | {"ok": False, "why": "never continues a branch on live-like trees, where roots never run out, "
+                                               "so its replay gain came after the recorded roots ran out, a phase it "
+                                               "never reaches live"}
+        if (cand_rep.get("auc") is not None and inc_rep.get("auc") is not None
+                and cand_rep["auc"] <= inc_rep["auc"] + 1e-9 and g["fill"] <= g["incumbent_fill"] + 1e-9):
+            return out | {"ok": False, "why": "the gain is only in the parallel penalty, and live-like trees show no "
+                                               f"fuller batches ({g['fill']} against {g['incumbent_fill']}): replay "
+                                               "charges batches that live would fill with new roots"}
     return out | {"ok": True}
 
 
