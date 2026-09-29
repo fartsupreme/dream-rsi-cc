@@ -310,7 +310,8 @@ expect a campaign's first rounds to find its loopholes.
   determinism rerun (every policy is replayed twice under different hash seeds).
 - **Seed policy π1:** the paper's parallel refinement, plus a plateau rule and a coverage rule.
 - **Policy safety:** an AST guard (prefix-only: no private attributes, reflection, I/O or
-  non-allowlisted imports), then a clean subprocess with a timeout.
+  non-allowlisted imports), then a clean subprocess per replay run, each with a timeout (120 s). A revision's
+  whole evaluation may take 4× the incumbent's (at least 120 s): the loop waits for the dream.
 
 ## Tests
 
