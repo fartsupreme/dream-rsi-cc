@@ -49,7 +49,9 @@ def render_map(tree, families: dict | None, goal: str = "", max_chars: int = 160
     front = []
     if frontier:
         front = ["", "## Untried directions (classifier suggestions — unverified, check before use)", ""]
-        front += [f"- {_one(d['direction'], 240)} — avoids {', '.join(d.get('avoids', [])) or '-'}" for d in frontier]
+        front += [f"- {_one(d['direction'], 240)} — avoids {', '.join(d.get('avoids', [])) or '-'}"
+                  + (f"; nearest tried: {', '.join('#' + str(i) for i in d['near'])}" if d.get("near") else "")
+                  for d in frontier]
 
     rec = ["", f"## Last {recent} attempts", ""]
     for n in nodes[-recent:]:

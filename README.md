@@ -8,7 +8,8 @@ It has two layers:
    A classifier fingerprints each attempt's *mechanism* (not its title), groups attempts into approach
    families, and renders a hard-capped map (~4k tokens) of what was tried, what stopped it, and what is
    untried. `drsi check` judges a new proposal against that history before any work starts:
-   novel / variant / duplicate.
+   novel / variant / duplicate, plus off_target (a new variant not aimed at what stopped its family: revise it)
+   and retry (a located fix to an attempt a bug stopped before its mechanism was measured).
 2. **The Dream-RSI loop** (Zheng et al., *Dream-RSI: Recursive Self-Improvement through Evolving Worlds*,
    arXiv 2609.14858). An exploration policy (Python code) chooses which attempts to extend and how many
    to run in parallel. Fresh headless Claude workers run the attempts in git worktrees, and a campaign
@@ -48,7 +49,7 @@ repository. `drsi` only reads the projects it indexes, and the live loop works i
 | `drsi fingerprint -c NAME [--stale]` | classify attempts that lack a fingerprint; `--stale` also re-reads those read under an earlier goal |
 | `drsi families -c NAME [--rebuild\|--frontier\|--list]` | build/update families and untried directions |
 | `drsi map -c NAME` | print the map |
-| `drsi check -c NAME --file P` | novelty verdict for an in-session attempt; exit 0 novel, 3 variant, 4 duplicate |
+| `drsi check -c NAME --file P` | novelty verdict for an in-session attempt; exit 0 novel, 3 variant, 4 duplicate, 5 off target, 6 retry |
 | `drsi sync -c NAME` | re-import sources, index new attempts and rows corrected since import, rewrite the map |
 | `drsi config -c NAME --set a.b=JSON` | change settings |
 | `drsi baseline / run / dream / replay -c NAME` | the Dream-RSI loop |
@@ -102,8 +103,17 @@ expect a campaign's first rounds to find its loopholes.
   user or project settings. They never run drsi themselves. A worker's score comes only from the scorer,
   never from its report.
 - **Novelty checks are the orchestrator's, not the worker's.** Each live attempt goes: propose; the
-  orchestrator checks the proposal against everything tried; implement. A duplicate goes back with the
-  judge's reasons, up to `live.max_proposals` tries, and is recorded as `not_novel` if it never passes.
+  orchestrator checks the proposal against everything tried; implement. A duplicate or an off-target variant goes
+  back with the judge's reasons, up to `live.max_proposals` tries, and is recorded as `not_novel` if it never passes.
+  How the check decides: BM25 over fingerprints retrieves the nearest attempts, with the proposal's own fingerprint
+  added to the query (a renamed repeat then shares the record's plain words) and any `#id` the proposal cites put
+  first; an LLM judge compares the proposal with only what it was shown, and a citation counts only if the judge was
+  shown that attempt. A variant not aimed at what stopped its family is off target, not a duplicate: it may be revised.
+  A located fix (where the bug is and what the fix is) to an attempt a bug stopped before its mechanism was measured
+  is a retry, allowed like a variant (in a dead family it must also target the family's stopper). Before a duplicate
+  verdict is final, a second pass reads the full cited records (in-flight proposals included) and may overturn it.
+  On a planted test set (88 recorded attempts, 65 labelled probes, a real judge) this took non-repeats wrongly made
+  final duplicates from 3 of 28 to 0; true repeats let through stayed at 1 of 37.
   The worktree is deleted and recreated after proposing, so nothing a worker does then survives. An attempt
   that never passes the check owns no code, so nothing unchecked can reach its descendants. The
   check can't be skipped or forged, and the proposal recorded is the one that was judged. Parallel attempts
@@ -225,11 +235,18 @@ expect a campaign's first rounds to find its loopholes.
   is live the round it is still running is left alone.
 - **Worker models:** workers run on `llm.worker_model` (default `opus`). To draw ideas from more than one model at once,
   set `llm.worker_models` to a list: slot i of each batch runs `worker_models[i % len]`, so `["opus", "fable"]` with
-  `search.W = 6` runs three of each. One model proposes and builds an attempt, and every attempt records its model.
+  `search.W = 6` runs three of each. The assignment rotates by one slot each batch: a policy lists a batch best cell
+  first, so a fixed assignment would always give the last model the least promising cell. One model proposes and
+  builds an attempt, every attempt records its model, and so does each frozen world.
+- **What counts as a pass:** a live attempt's outcome is `pass` when its score beats its parent's (or, for a new
+  branch, the baseline) by more than `live.pass_margin` (default 0). Set it to about twice the scorer's
+  test-retest noise, or re-measuring the same code will pass about half the time and keep a stalled family open.
 - **Workspace objective:** when the workspace can build and score only part of the goal, say which part in
   `live.objective`. Every worker's brief carries it after the goal, and `drsi families` asks the frontier for
   directions a worker can build there. Each suggested direction goes to one new branch of a round; branches past
-  the frontier's length choose from the map.
+  the frontier's length choose from the map. Each suggestion is checked against the record before anyone sees it:
+  a duplicate or off-target one is dropped (listed under `frontier_dropped` in families.json), and one judged a
+  variant names its nearest attempts.
 - **Moving the base:** to correct the fixed files workers read (a brief, a README, the scorer) mid-campaign,
   commit the change in the source repository and set `workspace.base` to that commit. The next round takes it
   up if it descends from the pinned base. New branches start on it; a continuation starts on it with its

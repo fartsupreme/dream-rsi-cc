@@ -1,0 +1,156 @@
+{
+ "families": [
+  {
+   "id": "F01",
+   "name": "Classic greedy baselines",
+   "description": "Textbook online rules as the priority: best fit (tightest residual), first fit (lowest index), worst fit (emptiest bin). Attempts 1, 2, 3.",
+   "boundary": "Plain reference rules with no changes; tie-break or exact-fit tweaks of best fit go in F03, reorderings of its score go in F02."
+  },
+  {
+   "id": "F02",
+   "name": "Monotone transforms of best fit",
+   "description": "Any strictly monotone reshaping of the residual score: squared, exponential, log, scaled, bonus or fullness terms. The argmax stays best fit, so packings are unchanged. Attempts 4-10.",
+   "boundary": "Keeps best fit's ordering exactly; non-monotone residual scoring is F04, tie-break changes are F03."
+  },
+  {
+   "id": "F03",
+   "name": "Best-fit tie-break tweaks",
+   "description": "Best fit with small changes to how near-ties or exact fits are resolved: oldest bin within 1 unit, exact-fit first, rounded residuals, small index penalty. Attempts 32, 56, 71, 82.",
+   "boundary": "Changes only ties or near-ties of best fit; F02 leaves the ordering fully intact, and F04 reorders non-monotonically."
+  },
+  {
+   "id": "F04",
+   "name": "Fixed non-monotone residual table",
+   "description": "A hand-set or offline-tuned step table (or spline) over the post-placement residual that ranks mid gaps below large ones. Break points are grid-swept, rescaled or annealed. Attempts 11-14, 61, 76.",
+   "boundary": "One static table for all items; tables keyed by item size are F05, tables learned during the stream are F06."
+  },
+  {
+   "id": "F05",
+   "name": "Item-size-conditioned step tables",
+   "description": "Several residual step tables, each picked by the arriving item's size class (C/3 threshold or quantile classes), tuned by hand or jointly by CMA-ES. Attempts 15, 79.",
+   "boundary": "Choice between step tables by item size; switching between different heuristic types is F12."
+  },
+  {
+   "id": "F06",
+   "name": "Online adaptive step table",
+   "description": "The residual table is learned during the stream from how often gaps of each size were later closed to zero. Attempts 73, 74, 75.",
+   "boundary": "Table values come from observed gap-closure outcomes; F09 scores gaps from the item-size distribution instead."
+  },
+  {
+   "id": "F07",
+   "name": "Polynomial with index differencing",
+   "description": "The FunSearch Weibull polynomial in capacity and item size, sign-flipped by bin size and differenced against a neighbouring bin, plus exponent, lag, sign, normalisation, sort-order and clipping variants. Attempts 16-21, 62, 63, 83.",
+   "boundary": "Single polynomial-differencing score; adding a fill-probability term is F24, and blends with other heuristics are F15 or F16."
+  },
+  {
+   "id": "F08",
+   "name": "Harmonic size-class segregation",
+   "description": "Items are split into size classes that pack into reserved bins or bin types: Harmonic-k, Refined Harmonic, cross-class leakage, or a new bin for every large item. Attempts 22-25, 70.",
+   "boundary": "Hard bin segregation by item class; soft reservation of residual ranges inside shared bins is F18."
+  },
+  {
+   "id": "F09",
+   "name": "Empirical fill-probability lookahead",
+   "description": "Best-fit score plus a term for the chance that a future item, estimated from past sizes (histogram, KDE, fitted Weibull, window, two-item convolution), fills the gap. Also covers expected-waste scoring. Attempts 26-31, 64, 65, 72, 77.",
+   "boundary": "Scores a gap by the chance that it gets filled; F10 penalises gaps that can't be filled, and F21 matches exact seen sizes."
+  },
+  {
+   "id": "F10",
+   "name": "Fragment-avoidance penalty",
+   "description": "Penalise placements that leave a gap smaller than the smallest seen item size (or a percentile or decaying estimate), optionally stacked on a step table. Attempts 33-36, 69.",
+   "boundary": "A hard penalty below a size threshold; the graded probabilities of F09 fall outside it."
+  },
+  {
+   "id": "F11",
+   "name": "Randomised bin selection",
+   "description": "Stochastic choice among feasible bins: a Gumbel-softmax over residuals, or epsilon-greedy mixing of first fit into best fit. Attempts 37, 38.",
+   "boundary": "Randomness in the choice itself; deterministic rules sit in the other families."
+  },
+  {
+   "id": "F12",
+   "name": "Static rule switching by item",
+   "description": "Picks a heuristic, or a stage of a staged rule, from the current item or its fit: polynomial for small items and table for large ones, or near-exact best fit first with polynomial fallback. Attempts 39, 81.",
+   "boundary": "The switch depends on the current item or placement; F13 switches on stream feedback and F14 on dataset identity."
+  },
+  {
+   "id": "F13",
+   "name": "Feedback-driven heuristic selection",
+   "description": "Picks a heuristic from online performance: switch to best fit when bin count runs over the L1 bound, or choose the best rule on the first 10% prefix. Attempts 78, 84.",
+   "boundary": "Selection driven by measured performance during the stream; F12 switches on item features."
+  },
+  {
+   "id": "F14",
+   "name": "Dataset-identity switching",
+   "description": "Picks the heuristic by bin capacity, which identifies the dataset. Violates G-ONLINE. Attempt 40.",
+   "boundary": "Branches on the dataset itself; the legitimate online switches in F12 and F13 do not."
+  },
+  {
+   "id": "F15",
+   "name": "Ensembles of hand heuristics",
+   "description": "Combines standardised step-table and polynomial scores by a linear blend, a rank sum or a per-bin max. Attempts 41, 42, 68.",
+   "boundary": "Fixed blending of two existing heuristics' scores; blends learned over many features are F16."
+  },
+  {
+   "id": "F16",
+   "name": "Tuned linear feature score",
+   "description": "A linear bin score over residual, item, fill-probability and polynomial features, with coefficients tuned by CMA-ES or random search under various objectives, seeds, populations and interleavings. Attempts 43-46, 48, 66, 67, 87.",
+   "boundary": "Linear parametric score fitted offline; nonlinear learned models are F17."
+  },
+  {
+   "id": "F17",
+   "name": "Learned neural priority",
+   "description": "A small MLP over bin features gives the priority, trained with evolution strategies. Attempt 47.",
+   "boundary": "A nonlinear learned model, as opposed to F16's linear coefficients."
+  },
+  {
+   "id": "F18",
+   "name": "Bin reservation rules",
+   "description": "Keeps certain bins for certain items: large gaps held back from small items, a cap on active bins, median-range gaps reserved for large items. Attempts 49, 50, 51.",
+   "boundary": "Soft exclusion rules inside shared bins; F08 segregates bins permanently by item class."
+  },
+  {
+   "id": "F19",
+   "name": "Evaluator tooling and reproduction",
+   "description": "Scorer infrastructure and measurements: incremental masks, L1 bound checks, validity checks, per-instance spread, reproducing the published FunSearch heuristics. Attempts 52-55, 88.",
+   "boundary": "No new priority mechanism, only measurement or tooling, unlike every other family."
+  },
+  {
+   "id": "F20",
+   "name": "Semi-online lookahead buffer",
+   "description": "Buffers arriving items and reorders them before placing (windowed FFD). Violates G-ONLINE. Attempt 57.",
+   "boundary": "Reorders or looks ahead at real items; F09 only models the distribution."
+  },
+  {
+   "id": "F21",
+   "name": "Residual matches seen sizes",
+   "description": "Prefers gaps equal to a previously seen unpaired item size, or close to multiples of the median seen size. Attempts 58, 59, 60.",
+   "boundary": "Targets gaps equal to specific seen sizes; F09 uses probabilities over a range."
+  },
+  {
+   "id": "F22",
+   "name": "Residual clustering across bins",
+   "description": "Prefers the bin whose new residual equals the most common residual among open bins, so gaps cluster. Attempt 85.",
+   "boundary": "Shapes gaps around the open-bin population, not around item sizes as F21 does."
+  },
+  {
+   "id": "F23",
+   "name": "Hypothetical duplicate placement",
+   "description": "Scores a bin by the residual left after placing a hypothetical second copy of the current item. Attempt 80.",
+   "boundary": "Simulates a repeat of the current item; F09 uses the distribution of past sizes."
+  },
+  {
+   "id": "F24",
+   "name": "Polynomial plus fill probability",
+   "description": "The index-differenced polynomial priority plus a weighted fill-probability term. Attempt 86.",
+   "boundary": "Adds lookahead to F07's polynomial specifically; F16 learns a general feature blend."
+  },
+  {
+   "id": "F00",
+   "name": "other / unclassified",
+   "description": "Attempts that fit no family.",
+   "boundary": ""
+  }
+ ],
+ "built": "2026-09-28T19:10:29Z",
+ "frontier": []
+}

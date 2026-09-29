@@ -192,9 +192,11 @@ def family_stats(tree: Tree, families: dict, plateau: int = 3) -> list[dict]:
 
 
 def build_frontier(tree: Tree, families: dict, llm, goal: str, path, plateau: int = 3, k: int = 8,
-                   objective: str | None = None) -> list[dict]:
+                   objective: str | None = None, checker=None) -> list[dict]:
     """Untried directions for new branches. With `objective` (what the campaign's workspace can build and score),
-    only directions a worker can build there are asked for."""
+    only directions a worker can build there are asked for. With `checker` (text -> novelty result), each direction
+    is checked against the record: a duplicate or off-target one is dropped (listed in frontier_dropped), and a
+    variant keeps the ids of its nearest attempts in `near`."""
     stats = family_stats(tree, families, plateau)
     table = "\n".join(f"{s['id']} | {s['name']} | n={s['n']} | {s['status']} | best={s['best']} | "
                       f"stopped by: {s['killed_by_top'] or '-'}" for s in stats)
@@ -210,8 +212,24 @@ def build_frontier(tree: Tree, families: dict, llm, goal: str, path, plateau: in
               "(<= 40 words, why it might get past what stopped the nearest families), avoids (the family ids it "
               "is deliberately distinct from).\n")
     out = llm.json(prompt, FRONTIER_SCHEMA)
+    directions, dropped = out.get("directions", [])[:k], []
+    if checker is not None:
+        kept = []
+        for d in directions:
+            try:
+                res = checker(d["direction"])
+            except Exception:  # noqa: BLE001 - an unchecked suggestion is kept, marked unchecked
+                kept.append(dict(d, checked=False))
+                continue
+            near = [str(n.get("id")) for n in res.get("nearest") or [] if n.get("id")]
+            if res.get("verdict") in ("duplicate", "off_target"):
+                dropped.append({"direction": d["direction"], "verdict": res["verdict"], "near": near})
+            else:
+                kept.append(dict(d, near=near) if near else d)
+        directions = kept
     data = load_families(path)
-    data["frontier"] = out.get("directions", [])[:k]
+    data["frontier"] = directions
+    data["frontier_dropped"] = dropped
     data["frontier_built"] = utcnow()
     save_families(path, data)
     return data["frontier"]
@@ -246,7 +264,8 @@ def _finish_swap(tree: Tree, path) -> None:
         staged.unlink()
 
 
-def rebuild_families(tree: Tree, llm, goal: str, path, plateau: int = 3, objective: str | None = None) -> dict:
+def rebuild_families(tree: Tree, llm, goal: str, path, plateau: int = 3, objective: str | None = None,
+                     checker=None) -> dict:
     """Build a new taxonomy and assign every attempt to it, then swap it in. Nothing is written until the
     new taxonomy exists, so a failed or interrupted rebuild leaves the old families and assignments intact."""
     with families_lock(path):
@@ -282,7 +301,8 @@ def rebuild_families(tree: Tree, llm, goal: str, path, plateau: int = 3, objecti
         latest.modify({n["id"]: swap for n in latest.nodes()})
         os.replace(staged, path)
         try:
-            build_frontier(latest, load_families(path), llm, goal, path, plateau=plateau, objective=objective)
+            build_frontier(latest, load_families(path), llm, goal, path, plateau=plateau, objective=objective,
+                           checker=checker)
         except Exception:  # noqa: BLE001 - suggestions are optional; the taxonomy stands without them
             pass
         return load_families(path)
@@ -295,8 +315,9 @@ def assign_new(tree: Tree, path, llm) -> int:
         return assign_families(Tree(tree.path), load_families(path), llm, only_unassigned=True)
 
 
-def refresh_frontier(tree: Tree, llm, goal: str, path, plateau: int = 3, objective: str | None = None) -> list[dict]:
+def refresh_frontier(tree: Tree, llm, goal: str, path, plateau: int = 3, objective: str | None = None,
+                     checker=None) -> list[dict]:
     with families_lock(path):
         _finish_swap(tree, path)
         return build_frontier(Tree(tree.path), load_families(path), llm, goal, path, plateau=plateau,
-                              objective=objective)
+                              objective=objective, checker=checker)

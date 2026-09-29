@@ -36,7 +36,7 @@ def pending_checks(camp: Campaign, hours: float = 12.0, tree=None) -> list[dict]
             latest[node] = row  # the node's latest row decides: its claim, then its verdict
     return [{"ticket": r.get("ticket", ""), "node": node, "proposal": r.get("proposal", "")}
             for node, r in latest.items()
-            if node not in recorded and r.get("verdict") in ("claim", "novel", "variant")]
+            if node not in recorded and r.get("verdict") in ("claim", "novel", "variant", "retry")]
 
 
 def run_check(camp: Campaign, proposal: str, llm, node: str | None = None) -> dict:
@@ -61,7 +61,7 @@ def run_check(camp: Campaign, proposal: str, llm, node: str | None = None) -> di
             record_check(camp.checks_path, {"node": node, "verdict": "claim", "proposal": proposal,
                                             "checked": utcnow()})
     result = novelty_check(tree, fams, llm, proposal, goal=cfg.get("goal", ""),
-                           plateau=cfg["search"]["plateau"], pending=pending)
+                           plateau=cfg["search"]["plateau"], pending=pending, query_fp=True, confirm=True)
     if node:
         result["node"] = node
     with open(lock_path, "w") as lock:

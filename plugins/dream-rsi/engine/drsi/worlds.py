@@ -32,7 +32,8 @@ def world_from_tree(tree: Tree, world_id: str, baseline: float = 0.0, ids: set[s
         valid = bool(n.get("valid", True)) if n.get("valid") is not None else score is not None
         parent = n["parent"] if (ids is None or n["parent"] in ids) else None
         nodes.append({"id": n["id"], "parent": parent, "score": score if valid else None, "valid": valid,
-                      "fail_class": n.get("fail_class"), "family": (n.get("fingerprint") or {}).get("family")})
+                      "fail_class": n.get("fail_class"), "family": (n.get("fingerprint") or {}).get("family"),
+                      "model": (n.get("worker") or {}).get("model")})
     return {"id": world_id, "baseline": baseline, "nodes": nodes}
 
 

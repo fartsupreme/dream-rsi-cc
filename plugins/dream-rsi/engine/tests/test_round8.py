@@ -52,12 +52,13 @@ class SecondStopperTest(unittest.TestCase):
             self.assertIn("the most common one or another", prompt)
             self.assertEqual(r["verdict"], "variant")
 
-    def test_a_variant_aimed_at_no_stopper_is_still_a_repeat(self):
+    def test_a_variant_aimed_at_no_stopper_is_sent_back_not_passed(self):
+        # round 20: off target, not a final duplicate (it may be revised to aim at the stopper)
         with tempfile.TemporaryDirectory() as d:
             llm = ScriptedLLM(lambda p, s: {"verdict": "variant", "family": "F01", "nearest_ids": ["2"],
                                             "what_differs": "renames the probes", "targets_gate": "G-CORRECT",
                                             "addresses_stopper": False, "doubts": "", "rationale": "r"})
-            self.assertEqual(check(_tree(d), FAMS, llm, "the probe table, renamed")["verdict"], "duplicate")
+            self.assertEqual(check(_tree(d), FAMS, llm, "the probe table, renamed")["verdict"], "off_target")
 
 
 if __name__ == "__main__":

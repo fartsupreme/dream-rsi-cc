@@ -23,6 +23,9 @@ def fake_llm(prompt, schema):
         return {"items": [{"id": i, "family": "F01"} for i in re.findall(r"^([^|\s]+)\|", prompt, re.M)]}
     if "directions" in props:
         return {"directions": [{"direction": "go elsewhere", "rationale": "r", "avoids": ["F01"]}]}
+    if "verdict" in props and "PROPOSAL\ngo elsewhere" in prompt:  # the frontier's suggestion, checked: new
+        return {"verdict": "novel", "family": "F00", "nearest_ids": [], "what_differs": "a new direction",
+                "targets_gate": "", "addresses_stopper": True, "doubts": "", "rationale": "new", "retry_of": ""}
     if "verdict" in props:
         return {"verdict": "duplicate", "family": "F01", "nearest_ids": ["1"], "what_differs": "",
                 "targets_gate": "speed", "addresses_stopper": False, "doubts": "", "rationale": "same thing"}

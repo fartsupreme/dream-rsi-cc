@@ -62,10 +62,11 @@ class NoveltyTest(unittest.TestCase):
         self.assertEqual(r["verdict"], "variant")
         self.assertEqual(r["exit_code"], EXIT["variant"])
 
-    def test_variant_that_does_not_target_the_stopper_is_a_duplicate(self):
+    def test_variant_that_does_not_target_the_stopper_is_sent_back(self):
+        # round 20: off target (revise it to aim at the stopper, or take another direction), not a final duplicate
         r = check(self.tree, FAMS, ScriptedLLM(judge("variant", addresses=False)), "short tail shellsort tweak")
-        self.assertEqual(r["verdict"], "duplicate")
-        self.assertEqual(r["exit_code"], EXIT["duplicate"])
+        self.assertEqual(r["verdict"], "off_target")
+        self.assertEqual(r["exit_code"], EXIT["off_target"])
         self.assertIn("does not target", r["rule"])
 
     def test_doubted_variant_that_targets_the_stopper_stays_variant(self):
