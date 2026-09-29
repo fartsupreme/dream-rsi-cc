@@ -241,8 +241,10 @@ expect a campaign's first rounds to find its loopholes.
   it; no revision is asked for). No dream runs, in the loop or in `drsi dream`, until `dream.min_worlds`
   (default 4) of those worlds can separate policies (a valid score and at least one continuation); the reason is
   printed.
-  The old ranking's score and curve stay available as `dream.score = "sweep"` and `dream.curve = "reveal"`;
-  `drsi replay` ranks exactly as the dream step does.
+  The old ranking's score and curve stay available as `dream.score = "sweep"` and `dream.curve = "reveal"`
+  (or `"batch"`, `"clock"`), but the guarantee above holds only for the defaults: those options can reward
+  behaviour a live round never shows, and the dream warns when one is set. `drsi replay` ranks exactly as the dream
+  step does.
 - **Parallel attempts:** the orchestrator's checks within a round are two-phase claims. Each claim is
   recorded under a lock and then judged without the lock, so checks run concurrently, but each one sees every
   claim before it. Claims from an interrupted earlier round are not treated as in flight.

@@ -17,6 +17,7 @@ import json
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .guard import check_policy_source
@@ -28,8 +29,35 @@ RUNNER = Path(__file__).resolve().parent / "replay_runner.py"
 
 
 def _run_once(job: dict, workdir: Path, seed: int, timeout: int) -> dict:
-    out = workdir / f"result-{seed}.json"
-    job_path = workdir / f"job-{seed}.json"
+    """The policy's trace on every (beta, world) of the job, each run in a process of its own (a live round runs one
+    policy per process, so a run must not see what an earlier run left in its process). The default beta is added to
+    the job's betas; at it the policy is built with no argument, as live."""
+    base = {"policy": job["policy"], "W": job["W"], "budget": job["budget"]}
+    info = _spawn(base | {"world": None}, workdir, f"{seed}-describe", seed, timeout)
+    if not info.get("ok"):
+        return info
+    default = info["default_beta"]
+    betas = list(job["betas"]) + ([default] if default not in job["betas"] else [])
+    tasks = [(b, i) for b in betas for i in range(len(job["worlds"]))]
+
+    def one(task):
+        b, i = task
+        return _spawn(base | {"world": job["worlds"][i], "beta": None if b == default else b}, workdir,
+                      f"{seed}-{b}-{i}", seed, timeout)
+    with ThreadPoolExecutor(max_workers=max(1, min(4, len(tasks)))) as pool:
+        results = list(pool.map(one, tasks))
+    failed = next((r for r in results if not r.get("ok")), None)
+    if failed:
+        return failed
+    runs: dict = {}
+    for (b, _), r in zip(tasks, results):
+        runs.setdefault(str(float(b)), []).append({"trace": r["trace"]})
+    return {"ok": True, "default_beta": default, "runs": runs}
+
+
+def _spawn(job: dict, workdir: Path, tag: str, seed: int, timeout: int) -> dict:
+    out = workdir / f"result-{tag}.json"
+    job_path = workdir / f"job-{tag}.json"
     job_path.write_text(json.dumps(job | {"out": str(out)}))
     env = {"PYTHONHASHSEED": str(seed), "PATH": "/usr/bin:/bin"}
     try:
@@ -199,7 +227,7 @@ def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
             for bi, batch in enumerate(row["trace"]):
                 if not isinstance(batch, list) or any(type(c) is not str for c in batch):
                     raise IllegalBatch("malformed trace")
-                seen, done = len(q._order), q._probes
+                seen, done, off = len(q._order), q._probes, q._off
                 try:
                     q.probe_batch(batch)
                 except RecordEnd:  # the run's last batch reached past the record
@@ -207,17 +235,24 @@ def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
                         raise IllegalBatch("the trace goes on past the end of the record")
                 t += 1  # every batch is a live batch: each probe is an attempt
                 curve_clock.append([t, q.best_score()])
-                # a batch's attempts run in parallel live: credit them in a fixed order the policy cannot choose
+                # a batch's attempts run in parallel live: credit them in a fixed order the policy cannot choose. In
+                # the batch that ends the record, the recorded cells come after the probes the record could not
+                # answer: live those are attempts too, and a lower bound may not assume they came later
+                lead = q._off - off
                 for k, nid in enumerate(sorted(q._order[seen:])):
                     o = q._obs[nid]
                     if o.valid and o.score is not None and (best is None or o.score > best):
                         best = o.score
-                    curve_canonical.append([done + k + 1, best])
+                    curve_canonical.append([done + lead + k + 1, best])
                 curve_batch.append([q._probes, q.best_score()])
-            # a run that stops before its budget, or reaches the end of its record, leaves batches a live round would
-            # have run (root slots never run out); each counts as an empty batch
-            unspent = -(-(budget - q._probes) // max(1, W)) if budget is not None and q._probes < budget else 0
+            # A run that stops before its budget leaves batches a live round would have run (root slots never run out),
+            # each counted as an empty batch; live the same policy stops the same way. A run that reached the end of
+            # its record would go on live in batches replay cannot see: each probe it had left counts as an empty
+            # batch, which no live continuation can fill less (so the penalty never undercharges it).
+            left = budget - q._probes if budget is not None and q._probes < budget else 0
+            unspent = left if q._ended else -(-left // max(1, W))
             out.append({"probes": q._probes, "rounds": q._rounds, "best": q.best_score(), "unspent": unspent,
+                        "ended": q._ended,
                         "off_record": q._off,  # probes the record could not answer: where replay is not what happened
                         "requested": list(q._requested), "batch_sizes": list(q._batch_sizes),
                         "curve": [list(p) for p in q._curve], "curve_batch": curve_batch, "curve_clock": curve_clock,
