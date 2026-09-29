@@ -36,7 +36,7 @@ from .families import load_families
 from .guard import check_policy_source, safe_builtins
 from .mapview import render_map
 from .novelty import render_check, text_hash
-from .question import ROOT, IllegalBatch, QuestionBase
+from .question import POLICY_HASH_SEED, ROOT, IllegalBatch, QuestionBase
 from .scorer import run_scorer
 from .store import Campaign, _atomic_write, make_node
 from .workspace import Workspaces, out_of_scope
@@ -516,7 +516,7 @@ def _drive(policy: PolicySource, q: LiveQuestion, budget: int, think: float | No
         proc = subprocess.Popen([sys.executable, "-s", "-P", str(RUNNER), str(ENGINE_DIR), str(job),
                                  str(req_w), str(resp_r)], pass_fds=(req_w, resp_r), stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-                                env={"PYTHONHASHSEED": "0", "PATH": "/usr/bin:/bin"})
+                                env={"PYTHONHASHSEED": str(POLICY_HASH_SEED), "PATH": "/usr/bin:/bin"})
         os.close(req_w)
         os.close(resp_r)
         register_child(proc)

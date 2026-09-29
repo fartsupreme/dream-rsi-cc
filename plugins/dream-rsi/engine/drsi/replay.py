@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 from .guard import check_policy_source
-from .question import IllegalBatch, RecordEnd, ReplayQuestion
+from .question import POLICY_HASH_SEED, IllegalBatch, RecordEnd, ReplayQuestion
 from .reward import attainment, eq1_value, live_penalty, mean_curve_auc
 
 ENGINE_DIR = Path(__file__).resolve().parents[1]
@@ -167,10 +167,10 @@ def evaluate_policy(policy_path, worlds: list[dict], W: int, betas, budget, lam:
     with tempfile.TemporaryDirectory() as d:
         job = {"policy": str(policy_path), "worlds": worlds, "W": W,
                "betas": [float(b) for b in betas], "budget": budget}
-        first = _run_once(job, Path(d), 1, timeout)
+        first = _run_once(job, Path(d), POLICY_HASH_SEED, timeout)  # the seed a live round runs at
         if not first.get("ok"):
             return {"ok": False, "stage": "run", "error": first.get("error", "unknown failure")}
-        second = _run_once(job, Path(d), 2, timeout)
+        second = _run_once(job, Path(d), POLICY_HASH_SEED + 1, timeout)  # any seed-keyed behaviour shows here
         if not second.get("ok"):
             return {"ok": False, "stage": "run", "error": second.get("error", "unknown failure")}
     if first != second:
