@@ -65,9 +65,10 @@ def with_cells(worlds: list[dict], tree: Tree) -> list[dict]:
 
 
 def informative(worlds: list[dict]) -> int:
-    """Worlds that can separate two policies: any with a valid score. A world of roots alone separates them too, since
-    which root slots a policy opens first decides when it meets the best one."""
-    return sum(1 for w in worlds if any(n.get("valid") and n.get("score") is not None for n in w["nodes"]))
+    """Worlds that can separate two policies: any with a valid score replay can reveal. A world of roots alone
+    separates them too, since which root slots a policy opens first decides when it meets the best one."""
+    from .replay import world_best
+    return sum(1 for w in worlds if world_best(w) is not None)
 
 
 def freeze_world(pool, world: dict) -> Path:

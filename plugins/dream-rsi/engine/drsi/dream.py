@@ -27,8 +27,8 @@ API_NOTES = """Question API (all a policy may use):
 - question.reset(); question.observed() -> {id: Observation(id, parent_id, branch, attempt, seq, score, valid,
   fail_class, family)}; question.best_score(); question.baseline_score; question.max_parallelism;
   question.probes (probes spent so far; each revealed one attempt); question.rounds (batches probed so far).
-  Attempt ids ("a1", "a2", ...) say only the order attempts were revealed in; the question is the same in replay
-  and in a live round.
+  Attempt ids ("a1", "a2", ...) say only the order attempts were revealed in, and family is always None (live it
+  depends on when an attempt was classified); the question is the same in replay and in a live round.
 - question.legal_actions() -> root slots ("root:<j>", open a new branch) + leaves of the revealed tree
 - question.legal_roots() -> the next available root slots
 - question.meta(cell) -> CellMeta(branch, attempt, parent_id, seq, tags)
@@ -104,13 +104,14 @@ def config_warnings(cfg: dict) -> list[str]:
 
 
 def gate_worlds(n: int, W: int, budget: int, baseline: float = 0.0, lo: float = 0.0, hi: float = 1.0,
-                families: list[str] | None = None) -> list[dict]:
+                families: list[str] | None = None, fail_classes: list[str] | None = None) -> list[dict]:
     """Synthetic live-like trees for the behaviour gate: more roots than a round can open and branches deeper
     than a round can go, so (as live) the record always answers. Scores are seeded: half the trees are random
     walks, half independent draws, with a failure rate that varies per tree, placed in [lo, hi] over the campaign's
-    baseline, with the campaign's family names, so they read like the campaign's own."""
+    baseline, with the campaign's family names and failure classes, so they read like the campaign's own."""
     import random
     names = list(families) if families else [None]
+    fails = list(fail_classes) if fail_classes else ["ok", "agent_error"]
     out = []
     for k in range(n):
         rng = random.Random(f"drsi-gate|{k}")
@@ -123,7 +124,7 @@ def gate_worlds(n: int, W: int, budget: int, baseline: float = 0.0, lo: float = 
                 valid = rng.random() < p_valid
                 nid = f"g{k}r{r}d{dd}"
                 nodes.append({"id": nid, "parent": prev, "score": lo + (hi - lo) * s if valid else None, "valid": valid,
-                              "fail_class": "ok" if valid or rng.random() < 0.5 else "agent_error",
+                              "fail_class": "ok" if valid else rng.choice(fails),
                               "family": rng.choice(names)})
                 prev = nid
         out.append({"id": f"gate{k}", "baseline": baseline, "nodes": nodes})
@@ -140,7 +141,9 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
         return {"ok": False, "error": "dream.gate_worlds must be at least 1 while dream.behaviour_gate is on"}
     base, lo, hi = _campaign_scale(worlds or [])
     names = sorted({x["family"] for w in (worlds or []) for x in w["nodes"] if x.get("family")}) or None
-    worlds = gate_worlds(n, W, budget, base, lo, hi, families=names)
+    fails = sorted({x["fail_class"] for w in (worlds or []) for x in w["nodes"]
+                    if not x.get("valid", True) and x.get("fail_class")}) or None
+    worlds = gate_worlds(n, W, budget, base, lo, hi, families=names, fail_classes=fails)
     traces, probes = {}, {}
     with tempfile.TemporaryDirectory(prefix="drsi-gate-") as tmp:
         for label, path in (("cand", cand_path), ("inc", inc_path)):
@@ -299,15 +302,17 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + f"{int(now * 1e6) % 1_000_000:06d}Z"
 
     inc_src = method.read_text()
-    inc = evaluate_policy(method, worlds, **params)
     worlds_total, on_record = len(worlds), None
+    worlds = [w for w in worlds if w.get("live", True)]  # the history world was never a live round of any policy
+    inc = evaluate_policy(method, worlds, **params) if worlds else {"ok": True, "reward": float("-inf"), "measured": {
+        "runs": {}}, "default_beta": 0.0}
     if inc.get("ok"):
         # Replay is what happened only where the record answers. Where the incumbent's replay stays on the record
         # (every round it recorded itself, and any other whose record covers its whole path) its value is exact, and
         # a candidate's run, which ends at its first probe past the record, can only score below what it does live on
         # the same attempts. So policies are compared on those worlds alone: a candidate that beats the incumbent
         # there does better live on the same attempts.
-        rows = inc["measured"]["runs"][str(float(inc["default_beta"]))]
+        rows = inc["measured"]["runs"].get(str(float(inc["default_beta"])), [])
         worlds = [w for w, row in zip(worlds, rows) if row["off_record"] == 0]
         on_record = len(worlds)
         if worlds and on_record < worlds_total:
@@ -324,8 +329,9 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
         skipped = (f"the incumbent failed replay ({inc.get('stage', 'run')}: {inc.get('error', '')}); it is kept and "
                    "no revision is asked for")
     elif informative(worlds) < need:  # too few to tell policies apart: a dream would spend developer calls on noise
-        skipped = (f"{informative(worlds)} of {worlds_total} world(s) can inform a dream with the incumbent's replay on "
-                   f"the record throughout, fewer than dream.min_worlds = {need}; the incumbent is kept")
+        skipped = (f"{informative(worlds)} of {worlds_total} world(s) recorded live can inform a dream with the "
+                   f"incumbent's replay on the record throughout, fewer than dream.min_worlds = {need}; the incumbent "
+                   "is kept")
     for m in range(0 if skipped else cfg["dream"]["M"]):
         with tempfile.TemporaryDirectory(prefix="drsi-dream-") as sb:
             sb = Path(sb)

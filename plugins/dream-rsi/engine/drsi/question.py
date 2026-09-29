@@ -243,12 +243,15 @@ class ReplayQuestion(QuestionBase):
         self._roots = self._kids.get(None, [])
         # A root is replayed in the slot it was opened in live (its recorded cell, "root:<j>"), so a policy replaying
         # its own round meets every attempt where it met it; a world without cells opens its roots in listed order.
+        # A world with cells maps each root to its slot; a root with no slot cell (a pruned attempt's continuation,
+        # re-rooted) was opened from no slot live, so no slot reaches it.
         slots: dict[int, str] = {}
         for r in self._roots:
             c = self._rec[r].get("cell")
             if isinstance(c, str) and c.startswith(ROOT) and c[len(ROOT):].isdigit():
                 slots.setdefault(int(c[len(ROOT):]), r)
-        self._slot = slots if self._roots and len(slots) == len(self._roots) else dict(enumerate(self._roots))
+        has_cells = any(self._rec[n].get("cell") is not None for n in self._rec)
+        self._slot = slots if has_cells else dict(enumerate(self._roots))
         self._off = 0  # probes past the record (evaluator-side: where replay stops being what happened)
         super().__init__(max_parallelism, world.get("baseline", 0.0), max_probes)
 
@@ -262,7 +265,8 @@ class ReplayQuestion(QuestionBase):
             nid = self._slot.get(int(cell[len(ROOT):]))
             return self._rec[nid] if nid is not None else None
         kids = [k for k in self._kids.get(cell, []) if k not in self._obs]
-        return self._rec[kids[0]] if kids else None
+        opened = [k for k in kids if self._rec[k].get("cell") == cell]  # the child opened from this leaf, live
+        return self._rec[(opened or kids)[0]] if kids else None
 
     def _expand(self, cells):
         out = []
@@ -343,12 +347,14 @@ class PolicyQuestion:
             raise KeyError(cell_id)
         m = self._q.meta(self._real[cell_id])
         return CellMeta(branch=m.branch, attempt=m.attempt, parent_id=self._shown.get(m.parent_id) if m.parent_id
-                        else None, seq=m.seq, tags=m.tags)
+                        else None, seq=m.seq, tags=())
 
     def _view(self, o: Observation) -> Observation:
+        # family is not shown: live it depends on when the classifier reached an attempt, and a world holds it as it
+        # stood later, so a policy acting on it would act differently in replay than live
         return Observation(id=self._shown[o.id], parent_id=self._shown[o.parent_id] if o.parent_id else None,
                            branch=o.branch, attempt=o.attempt, seq=o.seq, score=o.score, valid=o.valid,
-                           fail_class=o.fail_class, family=o.family)
+                           fail_class=o.fail_class, family=None)
 
     def probe_batch(self, cells, on_reveal=None) -> list[Observation | None]:
         q = self._q
