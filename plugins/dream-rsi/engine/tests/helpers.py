@@ -73,6 +73,14 @@ def record(policy_path, truth, W, budget, world_id):
     return {"id": world_id, "baseline": 0.0, "nodes": nodes}
 
 
+def celled(world):
+    """The world as a live round records it: each root with the slot it was opened in (in listed order), each child
+    with the attempt it was opened from."""
+    roots = [n["id"] for n in world["nodes"] if n.get("parent") is None]
+    return dict(world, nodes=[dict(n, cell=f"root:{roots.index(n['id'])}" if n.get("parent") is None else n["parent"])
+                              for n in world["nodes"]])
+
+
 def with_block(block):
     """An edit that puts this EVOLVE block into a policy source."""
     def edit(src):

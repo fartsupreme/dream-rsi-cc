@@ -33,7 +33,7 @@ from drsi.question import RecordEnd, ReplayQuestion
 from drsi.replay import ENGINE_DIR, evaluate_policy, reachable, world_best
 from drsi.store import DEFAULT_CONFIG
 from drsi.worlds import informative
-from tests.helpers import record, truth_world, with_block
+from tests.helpers import celled, record, truth_world, with_block
 from tests.test_dream import Dev
 from tests.test_policy import chain_world
 from tests.test_round28 import our_runners, write
@@ -230,7 +230,7 @@ class CommandTest(unittest.TestCase):
     def test_drsi_replay_counts_only_worlds_recorded_live(self):
         from drsi import cli
         cfg = {"search": {"W": 2, "K1": 2}, "dream": dict(DEFAULT_CONFIG["dream"])}
-        worlds = [chain_world(4, 4), dict(chain_world(4, 4), id="history", live=False)]
+        worlds = [celled(chain_world(4, 4)), dict(chain_world(4, 4), id="history", live=False)]
         out = io.StringIO()
         with mock.patch.object(cli, "resolve_campaign", return_value=mock.Mock(config=cfg)), \
                 mock.patch.object(cli, "_worlds", return_value=worlds), \

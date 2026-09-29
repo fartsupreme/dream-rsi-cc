@@ -43,7 +43,7 @@ from drsi.replay import evaluate_policy
 from tests.test_dream import Dev, serial_policy
 from tests.test_round19 import stop_after_roots
 from tests.test_round20 import FAMS, judge_prompt, llm, nearest_section, tree
-from tests.helpers import ScriptedLLM, own_worlds
+from tests.helpers import ScriptedLLM, celled, own_worlds
 from drsi.novelty import check
 from drsi.store import make_node
 from tests import test_round18  # the module, so its tests are not collected again here
@@ -131,7 +131,7 @@ class IncumbentTest(unittest.TestCase):
             self.assertNotEqual(broken, SEED_POLICY.read_text())
             (pdir / "method.py").write_text(broken)
             dev = Dev(lambda src: SEED_POLICY.read_text())
-            rep = run_dream(pdir, roots_best_worlds(), dev, CFG, Path(d) / "logs")
+            rep = run_dream(pdir, [celled(w) for w in roots_best_worlds()], dev, CFG, Path(d) / "logs")
             self.assertFalse(rep["deployed"], rep)
             self.assertEqual(dev.prompts, [])
             self.assertFalse(rep["incumbent_ok"])

@@ -38,7 +38,7 @@ from drsi.question import PolicyQuestion, RecordEnd, ReplayQuestion
 from drsi.replay import evaluate_policy
 from drsi.reward import live_penalty
 from drsi.store import Tree, make_node
-from tests.helpers import BEST_FIRST, WORST_FIRST, ScriptedLLM, own_worlds, record, truth_world, with_block
+from tests.helpers import BEST_FIRST, ScriptedLLM, WORST_FIRST, celled, own_worlds, record, truth_world, with_block
 from tests.test_dream import Dev
 from tests.test_policy import chain_world
 from tests.test_round20 import FAMS
@@ -407,7 +407,8 @@ class GrokRoundTwentySevenTest(unittest.TestCase):
         (pdir / "method.py").write_text(with_block(ALL_ROOTS_ONLY)(SEED_POLICY.read_text()))
         cfg = {"search": {"W": 4, "K1": 6}, "dream": {"M": 1, "betas": [0.0, 0.6, 1.0], "lambda": 0.25,
                                                       "beta1": 0.01, "beta2": 0.01, "bootstrap": 200, "gate_worlds": 8}}
-        rep = run_dream(pdir, [hundred_roots() for _ in range(4)], Dev(with_block(LATE_BEST)), cfg, self.root / "logs")
+        rep = run_dream(pdir, [celled(hundred_roots()) for _ in range(4)], Dev(with_block(LATE_BEST)), cfg,
+                        self.root / "logs")
         self.assertIsNone(rep["skipped"], rep)
         self.assertEqual(rep["revisions"][0]["stage"], "scored", rep["revisions"])
         self.assertFalse(rep["deployed"], rep["revisions"])

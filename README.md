@@ -229,9 +229,11 @@ expect a campaign's first rounds to find its loopholes.
     a policy lists them in earns nothing (nor do the ids, which live numbers in that order).
   - Reaching good attempts sooner scores higher even when every run explores the whole world.
   - Worlds without a single valid reachable score can't favour any policy.
-- **Deploying a revision:** replay is exact only where the record answers. Policies are compared on the worlds
-  where the incumbent's replay stays on the record (every round it recorded itself, and any other whose record
-  covers its whole path): there its value is exact, and a candidate's run, which ends at its first probe past the
+- **Deploying a revision:** replay is exact only where the record answers. Policies are compared on the rounds
+  recorded live whose every attempt keeps its cell (without cells a world cannot say which child was opened from
+  which leaf, and an attempt a prune re-parented would read as a continuation live never ran; older worlds get
+  their cells from the tree), and among those, on the worlds where the incumbent's replay stays on the record
+  (every round it recorded itself, and any other whose record covers its whole path): there its value is exact, and a candidate's run, which ends at its first probe past the
   record, can only score below what it does live on the same attempts, so a candidate that wins there does better
   live on them. On a world the incumbent leaves, its own replay would be cut short and any candidate resembling the
   world's recorder would look better. A candidate that probes past the

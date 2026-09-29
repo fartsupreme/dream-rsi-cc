@@ -25,7 +25,7 @@ from pathlib import Path
 
 from drsi.dream import SEED_POLICY, gate_worlds
 from drsi.replay import ENGINE_DIR, _aggregate, evaluate_policy
-from tests.helpers import with_block
+from tests.helpers import celled, with_block
 from tests.test_policy import chain_world
 from tests.test_round23 import ALLROOTS
 from tests.test_round27 import LATE_BEST, hundred_roots
@@ -145,8 +145,9 @@ class ReplayCommandTest(unittest.TestCase):
         from drsi.store import DEFAULT_CONFIG
         cfg = {"search": {"W": 2, "K1": 2}, "dream": dict(DEFAULT_CONFIG["dream"])}
         # a world the seed stays on the record in, and one it leaves at once (two roots, a batch of two slots past)
-        stay = chain_world(4, 4)
-        leave = {"id": "short", "baseline": 0.0, "nodes": [{"id": "x", "parent": None, "score": 0.5, "valid": True}]}
+        stay = celled(chain_world(4, 4))
+        leave = celled({"id": "short", "baseline": 0.0,
+                        "nodes": [{"id": "x", "parent": None, "score": 0.5, "valid": True}]})
         camp = mock.Mock(config=cfg)
         out = io.StringIO()
         with mock.patch.object(cli, "resolve_campaign", return_value=camp), \

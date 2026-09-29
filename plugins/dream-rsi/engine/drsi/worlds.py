@@ -90,3 +90,12 @@ def load_worlds(pool) -> list[dict]:
         if w.get("nodes"):
             out.append(w)
     return out
+
+
+def comparable(worlds: list[dict]) -> list[dict]:
+    """The worlds a dream may compare policies on: rounds recorded live whose every attempt keeps its cell (the root
+    slot or the attempt it was opened from). Without cells a world cannot say which child was opened from which leaf,
+    and an attempt a prune re-parented reads as a continuation live never ran. The history world (imported ledger
+    rows, some scored by the classifier's outcome) was never a live round."""
+    return [w for w in worlds if w.get("live", True) and w["nodes"]
+            and all(n.get("cell") is not None for n in w["nodes"])]
