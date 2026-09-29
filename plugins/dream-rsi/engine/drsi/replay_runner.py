@@ -16,7 +16,7 @@ def main() -> None:
     engine, job_path = sys.argv[1], sys.argv[2]
     sys.path.insert(0, engine)
     from drsi.guard import safe_builtins
-    from drsi.question import PolicyQuestion, ReplayQuestion
+    from drsi.question import PolicyQuestion, RecordEnd, ReplayQuestion
 
     class TracingQuestion(ReplayQuestion):
         def __init__(self, *a, **kw):
@@ -52,7 +52,10 @@ def main() -> None:
                 cls = fresh_policy()
                 # at its default beta a policy is built as the live round builds it, with no argument
                 policy = cls() if beta == default_beta else cls(beta=beta)
-                policy.solve(PolicyQuestion(q), job["budget"])  # the view every environment hands a policy
+                try:
+                    policy.solve(PolicyQuestion(q), job["budget"])  # the view every environment hands a policy
+                except RecordEnd:  # the run reached the end of its record: what it did up to there is its trace
+                    pass
                 rows.append({"trace": q._trace})
             runs[str(float(beta))] = rows
         result = {"ok": True, "default_beta": default_beta, "runs": runs}

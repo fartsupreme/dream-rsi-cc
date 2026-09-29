@@ -47,10 +47,11 @@ JUDGE_RULES = """Decide whether the PROPOSAL repeats history. The prior attempts
 - variant: the same family as prior attempts but with a concrete technical difference.
 - novel: a mechanism no prior attempt used.
 - retry: the proposal names a located bug (where it is and what the fix is) in a prior attempt that the bug
-  stopped before its mechanism was measured; put that attempt's id in retry_of. A retry that only guesses at a slip,
+  stopped before its mechanism was measured; put that attempt's label in retry_of. A retry that only guesses at a slip,
   or one of an attempt whose mechanism was measured, is a duplicate.
 Judge only against the record: whether you expect the idea to work does not change the verdict.
-Also give: family (the best-matching family id, F00 if none), nearest_ids (the closest prior attempt ids),
+Cite each attempt by its label exactly as shown after "#" (an in-flight proposal by pending:<label>).
+Also give: family (the best-matching family id, F00 if none), nearest_ids (the closest prior attempts' labels),
 what_differs (the concrete technical difference from the nearest attempt; "" if none), targets_gate (the
 gate or argument, among those that stopped the nearest attempts or their family -- the most common one or another,
 since a family can be stopped by several -- that the stated difference is aimed at; the most common one if it is
@@ -275,9 +276,21 @@ def check(tree: Tree, families: dict, llm, proposal: str, k: int = 8, goal: str 
         labels[lab] = ("pending", lab)
         claims[lab] = pc
 
+    raw_ids: dict[str, tuple[str, str]] = {i: ("tree", i) for i in tree_label}  # an attempt's own id
+    raw_ids.update({str(pc.get("node") or pc.get("ticket")): ("pending", lab) for lab, pc in claims.items()})
+
     def resolve(cite, loose: bool = False) -> tuple[str, str] | None:
-        """The attempt or in-flight proposal a citation names, by its label; loose also reads a label followed by
-        words ("#3 (radix merge)")."""
+        """The attempt or in-flight proposal a citation names: its label as shown, else its own id exactly, else a
+        flattened reading of either; loose also reads a label followed by words ("#3 (radix merge)")."""
+        s = str(cite or "").strip()
+        exact = [s[1:-1] if s.startswith("[") and s.endswith("]") else s]
+        exact += [k[1:] for k in exact if k.startswith("#")]
+        for k in exact:
+            if k in labels:
+                return labels[k]
+        for k in exact:
+            if k in raw_ids:
+                return raw_ids[k]
         c = _flat(cite, 200).strip().lstrip("#[").rstrip("]").lstrip("#")
         keys = [c, c.rstrip("].,;:)")] + ([c.split()[0].rstrip("].,;:)")] if loose and c.split() else [])
         for k in keys:

@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 from .guard import check_policy_source
-from .question import IllegalBatch, ReplayQuestion
+from .question import IllegalBatch, RecordEnd, ReplayQuestion
 from .reward import attainment, eq1_value, live_penalty, mean_curve_auc
 
 ENGINE_DIR = Path(__file__).resolve().parents[1]
@@ -196,23 +196,26 @@ def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
         for world, row in zip(worlds, rows):
             q = ReplayQuestion(world, W, max_probes=budget)
             curve_batch, curve_clock, curve_canonical, t, best = [], [], [], 0, None
-            for batch in row["trace"]:
+            for bi, batch in enumerate(row["trace"]):
                 if not isinstance(batch, list) or any(type(c) is not str for c in batch):
                     raise IllegalBatch("malformed trace")
                 seen, done = len(q._order), q._probes
-                q.probe_batch(batch)
+                try:
+                    q.probe_batch(batch)
+                except RecordEnd:  # the run's last batch reached past the record
+                    if bi != len(row["trace"]) - 1:
+                        raise IllegalBatch("the trace goes on past the end of the record")
                 t += 1  # every batch is a live batch: each probe is an attempt
                 curve_clock.append([t, q.best_score()])
                 # a batch's attempts run in parallel live: credit them in a fixed order the policy cannot choose
-                # (recorded ids, then those made past the record, whose names say nothing about the world)
-                for k, nid in enumerate(sorted(q._order[seen:], key=lambda i: (i in q._synthetic, i))):
+                for k, nid in enumerate(sorted(q._order[seen:])):
                     o = q._obs[nid]
                     if o.valid and o.score is not None and (best is None or o.score > best):
                         best = o.score
                     curve_canonical.append([done + k + 1, best])
                 curve_batch.append([q._probes, q.best_score()])
-            # a run that stops before its budget leaves batches a live round would have run (root slots never run
-            # out); each counts as an empty batch
+            # a run that stops before its budget, or reaches the end of its record, leaves batches a live round would
+            # have run (root slots never run out); each counts as an empty batch
             unspent = -(-(budget - q._probes) // max(1, W)) if budget is not None and q._probes < budget else 0
             out.append({"probes": q._probes, "rounds": q._rounds, "best": q.best_score(), "unspent": unspent,
                         "off_record": q._off,  # probes the record could not answer: where replay is not what happened

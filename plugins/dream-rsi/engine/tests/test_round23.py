@@ -73,7 +73,7 @@ class ReplayLiveGapTest(unittest.TestCase):
         return p
 
     def test_a_gain_only_in_the_penalty_is_not_deployed_unless_live_batches_fill_better(self):
-        worlds = roots_best_worlds()
+        worlds = own_worlds(SEED_POLICY.read_text(), 4, 24, plateau=True)  # round 27: where the seed's replay is exact
         cand = self.policy("noplat", no_plateau)
         rs, rc = evaluate_policy(self.seed, worlds, **KW), evaluate_policy(cand, worlds, **KW)
         self.assertLessEqual(rc["reward"], rs["reward"] + 1e-9)  # round 24: no gain left, penalty or otherwise

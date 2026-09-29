@@ -89,13 +89,14 @@ class StopEarlyTest(unittest.TestCase):
         self.assertAlmostEqual(stop["auc"], seed["auc"])  # the tie that used to be broken by the penalty alone
         self.assertLess(stop["reward"], seed["reward"])
 
-    def test_a_record_that_runs_out_is_not_charged_for_stopping(self):
-        # two roots, one deep each: after both are probed nothing is answerable, so stopping costs nothing
+    def test_a_record_that_runs_out_charges_the_rest_of_the_budget(self):
+        # two roots, one deep each (round 27: a probe past the record ends the run, and the rest of the budget
+        # counts as empty batches, since a live round would have gone on)
         worlds = [{"id": "tiny", "baseline": 0.0, "nodes": [
             {"id": "a", "parent": None, "score": 1.0, "valid": True}, {"id": "b", "parent": None, "score": 0.5,
                                                                         "valid": True}]}]
         rep = evaluate_policy(SEED_POLICY, worlds, **KW)
-        self.assertEqual(rep["parallel_penalty"], 0.0, rep)
+        self.assertGreater(rep["parallel_penalty"], 0.5, rep)
 
     def test_a_stop_after_roots_revision_is_not_deployed(self):
         pdir = self.root / "policy"

@@ -7,22 +7,28 @@ record; in live mode a worker produces it.
 
 Replay rule (paper: Child(v) is v's recorded child, or ∅): a leaf reveals its
 first recorded child. Siblings recorded under an interior node are unreachable,
-because only leaves are actions (A(T) = {r} ∪ leaves). Past the record (a leaf
-with no recorded child, a root slot beyond the recorded roots) a budgeted replay
-reveals a failed attempt, as live, where every probe is an attempt: the record
-holds nothing better, and a policy sees exactly what a live question shows it.
-Without a budget the paper's ∅ stands: nothing is revealed, the leaf is
-exhausted and the recorded roots are the limit, so a run that explores until
-nothing is legal still ends.
+because only leaves are actions (A(T) = {r} ∪ leaves). Under a budget, a probe
+past the record (a leaf with no recorded child, a root slot beyond the recorded
+roots) ends the run: replay cannot know what that work would have found, so the
+batch's recorded cells are revealed, the probes past the record cost budget and
+reveal nothing, and RecordEnd stops the policy. Nothing it could learn there
+counts, so a replayed run never scores above what the same policy does live on
+the same attempts. Without a budget the paper's ∅ stands: nothing is revealed,
+the leaf is exhausted and the recorded roots are the limit, so a run that
+explores until nothing is legal still ends.
 """
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 
 
 class IllegalBatch(ValueError):
     pass
+
+
+class RecordEnd(BaseException):
+    """A replayed run reached the end of its record. Not an Exception, so a policy (which may catch only Exception
+    or narrower) cannot catch it and go on; the runner that started the policy does."""
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,7 @@ class QuestionBase:
         self._probes = 0
         self._rounds = 0
         self._probing = False
+        self._ended = False  # a replayed run past its record: no probe counts after this
         self._batch_sizes: list[int] = []
         self._requested: list[int] = []  # cells asked for per batch (after the budget cut)
         self._curve: list[tuple[int, float | None]] = []  # (probes, best score) after every reveal
@@ -145,6 +152,8 @@ class QuestionBase:
                         tags=((f"family:{o.family}",) if o.family else ()))
 
     def probe_batch(self, cells, on_reveal=None) -> list[Observation | None]:
+        if self._ended:
+            raise RecordEnd("the replayed record has ended")
         if self._probing:
             raise IllegalBatch("probe_batch cannot be called from inside on_reveal")
         cells = list(cells)
@@ -174,7 +183,7 @@ class QuestionBase:
             for cell, node in zip(cells, children):
                 if cell.startswith(ROOT):
                     self._opened_slots.add(int(cell[len(ROOT):]))
-                if node is None:  # only an unbudgeted replay: the paper's empty child
+                if node is None:  # past the record: nothing revealed (budgeted replay ends after this batch)
                     if not cell.startswith(ROOT):
                         self._exhausted.add(cell)
                     self._probes += 1
@@ -186,9 +195,11 @@ class QuestionBase:
                 out.append(obs)
                 if on_reveal:
                     on_reveal(obs)
-            return out
         finally:
             self._probing = False
+        if self._ended:
+            raise RecordEnd("the replayed record has ended")
+        return out
 
     def _reveal(self, cell: str, node: dict) -> Observation:
         if cell.startswith(ROOT):
@@ -224,9 +235,6 @@ class ReplayQuestion(QuestionBase):
             p = n.get("parent")
             self._kids.setdefault(None if p is None else str(p), []).append(str(n["id"]))
         self._roots = self._kids.get(None, [])
-        fails = Counter(n.get("fail_class") for n in nodes if not n.get("valid", n.get("score") is not None)
-                        and n.get("fail_class"))
-        self._fail_class = fails.most_common(1)[0][0] if fails else "ok"  # "ok": the scorer ran and found it invalid
         # A root is replayed in the slot it was opened in live (its recorded cell, "root:<j>"), so a policy replaying
         # its own round meets every attempt where it met it; a world without cells opens its roots in listed order.
         slots: dict[int, str] = {}
@@ -235,9 +243,7 @@ class ReplayQuestion(QuestionBase):
             if isinstance(c, str) and c.startswith(ROOT) and c[len(ROOT):].isdigit():
                 slots.setdefault(int(c[len(ROOT):]), r)
         self._slot = slots if self._roots and len(slots) == len(self._roots) else dict(enumerate(self._roots))
-        self._made = 0  # ids made for attempts past the record
         self._off = 0  # probes past the record (evaluator-side: where replay stops being what happened)
-        self._synthetic: set[str] = set()
         super().__init__(max_parallelism, world.get("baseline", 0.0), max_probes)
 
     def _root_capacity(self) -> int | None:
@@ -252,25 +258,13 @@ class ReplayQuestion(QuestionBase):
         kids = [k for k in self._kids.get(cell, []) if k not in self._obs]
         return self._rec[kids[0]] if kids else None
 
-    def _past_record(self, cell: str) -> dict:
-        """What live would show for a probe the record cannot answer: a failed attempt (no score, the tree's usual
-        failure class), in its parent's family, under an id in the tree's own style that no recorded node has."""
-        while True:
-            self._made += 1
-            nid = f"{self._world.get('id', 'world')}-{self._made:03d}"
-            if nid not in self._rec and nid not in self._obs:
-                break
-        family = None if cell.startswith(ROOT) else self._obs[cell].family
-        self._off += 1
-        self._synthetic.add(nid)
-        return {"id": nid, "score": None, "valid": False, "fail_class": self._fail_class, "family": family}
-
     def _expand(self, cells):
         out = []
         for c in cells:
             node = self._recorded(c)
             if node is None and self._max_probes is not None:
-                node = self._past_record(c)
+                self._off += 1
+                self._ended = True
             out.append(node)
         return out
 
@@ -352,6 +346,8 @@ class PolicyQuestion:
 
     def probe_batch(self, cells, on_reveal=None) -> list[Observation | None]:
         q = self._q
+        if q._ended:
+            raise RecordEnd("the replayed record has ended")
         if q._probing:
             raise IllegalBatch("probe_batch cannot be called from inside on_reveal")
         cells = list(cells)
