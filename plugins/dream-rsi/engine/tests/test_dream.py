@@ -6,10 +6,16 @@ from pathlib import Path
 
 from drsi.agent import AgentResult
 from drsi.dream import run_dream, split_evolve
+from tests.helpers import BEST_FIRST, WORST_FIRST, record, truth_world
 from tests.test_policy import SEED, chain_world
 
 CFG = {"search": {"W": 4, "K1": 6}, "dream": {"M": 2, "betas": [0.0, 0.5, 1.0], "lambda": 0.25,
                                                "beta1": 0.01, "beta2": 0.01}}
+# The dream compares policies on worlds the incumbent's replay stays on the record in (round 26), so these tests run it
+# on rounds the incumbent recorded itself: it opens four roots, then continues them from the worst up.
+DREAM_CFG = {"search": {"W": 2, "K1": 4}, "dream": {"M": 2, "betas": [0.0, 0.5, 1.0], "lambda": 0.25, "beta1": 0.01,
+                                                    "beta2": 0.01, "bootstrap": 200, "gate_worlds": 8}}
+STOP_AFTER_ROOTS = WORST_FIRST.replace("        firsts = [c for c", "        return []\n        firsts = [c for c")
 SERIAL_BLOCK = """    # EVOLVE-BLOCK-START
     def select_batch(self, question, closed, state):
         roots = question.legal_roots()
@@ -60,9 +66,10 @@ class DreamTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.pdir = Path(self.tmp.name) / "policy"
         self.pdir.mkdir()
-        (self.pdir / "method.py").write_text(serial_policy())
+        self.incumbent = replace_block(WORST_FIRST)(SEED.read_text())
+        (self.pdir / "method.py").write_text(self.incumbent)
         self.logs = Path(self.tmp.name) / "logs"
-        self.worlds = [chain_world(), chain_world(n_roots=3, depth=8, climb=0.05)]
+        self.worlds = [record(self.pdir / "method.py", truth_world(i), 2, 8, f"iter{i:04d}") for i in range(6)]
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -73,56 +80,55 @@ class DreamTest(unittest.TestCase):
         self.assertEqual(before + block + after, SEED.read_text())
 
     def test_better_revision_is_deployed_and_archived(self):
-        dev = Dev(replace_block(seed_block()))
-        rep = run_dream(self.pdir, self.worlds, dev, CFG, self.logs)
+        dev = Dev(replace_block(BEST_FIRST))
+        rep = run_dream(self.pdir, self.worlds, dev, DREAM_CFG, self.logs)
         self.assertTrue(rep["deployed"], rep)
         self.assertGreater(rep["best_reward"], rep["incumbent_reward"])
-        self.assertIn("coverage rule", (self.pdir / "method.py").read_text())
+        self.assertIn("reverse=True", (self.pdir / "method.py").read_text())
         self.assertTrue((self.pdir / "versions" / "v0000.py").exists())
         self.assertTrue((self.pdir / "versions" / "v0001.py").exists())
         self.assertEqual(len(list(self.logs.glob("dream-*.json"))), 1)
 
     def test_second_revision_starts_from_best_so_far(self):
-        dev = Dev(replace_block(seed_block()), lambda s: s)
-        run_dream(self.pdir, self.worlds, dev, CFG, self.logs)
-        self.assertIn("coverage rule", dev.seen[1])
+        dev = Dev(replace_block(BEST_FIRST), lambda s: s)
+        run_dream(self.pdir, self.worlds, dev, DREAM_CFG, self.logs)
+        self.assertIn("reverse=True", dev.seen[1])
 
     def test_edit_outside_block_rejected(self):
         dev = Dev(lambda s: s.replace("beta = 0.6", "beta = 0.9"), lambda s: s)
-        rep = run_dream(self.pdir, self.worlds, dev, CFG, self.logs)
+        rep = run_dream(self.pdir, self.worlds, dev, DREAM_CFG, self.logs)
         self.assertFalse(rep["deployed"])
         self.assertEqual(rep["revisions"][0]["stage"], "scope")
 
     def test_guard_failure_recorded(self):
-        bad = SERIAL_BLOCK.replace("roots = question.legal_roots()", "import os\n        roots = question.legal_roots()")
+        bad = WORST_FIRST.replace("obs = question.observed()", "import os\n        obs = question.observed()")
         dev = Dev(replace_block(bad), lambda s: s)
-        rep = run_dream(self.pdir, self.worlds, dev, CFG, self.logs)
+        rep = run_dream(self.pdir, self.worlds, dev, DREAM_CFG, self.logs)
         self.assertEqual(rep["revisions"][0]["stage"], "guard")
         self.assertFalse(rep["deployed"])
-        self.assertEqual((self.pdir / "method.py").read_text(), serial_policy())
+        self.assertEqual((self.pdir / "method.py").read_text(), self.incumbent)
 
     def test_worse_revision_is_not_deployed(self):
-        (self.pdir / "method.py").write_text(SEED.read_text())
-        dev = Dev(replace_block(SERIAL_BLOCK.replace("roots[:1]", "roots[:1]  # worse")), lambda s: s)
-        rep = run_dream(self.pdir, self.worlds, dev, CFG, self.logs)
+        dev = Dev(replace_block(STOP_AFTER_ROOTS), lambda s: s)
+        rep = run_dream(self.pdir, self.worlds, dev, DREAM_CFG, self.logs)
         self.assertEqual(rep["revisions"][0]["stage"], "scored")
         self.assertLess(rep["revisions"][0]["reward"], rep["incumbent_reward"])
         self.assertFalse(rep["deployed"])
-        self.assertEqual((self.pdir / "method.py").read_text(), SEED.read_text())
+        self.assertEqual((self.pdir / "method.py").read_text(), self.incumbent)
 
     def test_unchanged_file_is_not_deployed(self):
-        rep = run_dream(self.pdir, self.worlds, Dev(), CFG, self.logs)
+        rep = run_dream(self.pdir, self.worlds, Dev(), DREAM_CFG, self.logs)
         self.assertFalse(rep["deployed"])
         self.assertEqual([r["stage"] for r in rep["revisions"]], ["unchanged", "unchanged"])
 
     def test_agent_failure_recorded(self):
-        rep = run_dream(self.pdir, self.worlds, Dev(ok=False), CFG, self.logs)
+        rep = run_dream(self.pdir, self.worlds, Dev(ok=False), DREAM_CFG, self.logs)
         self.assertEqual(rep["revisions"][0]["stage"], "agent")
         self.assertFalse(rep["deployed"])
 
     def test_prompt_carries_scoring_contract_and_report(self):
         dev = Dev()
-        run_dream(self.pdir, self.worlds, dev, CFG, self.logs)
+        run_dream(self.pdir, self.worlds, dev, DREAM_CFG, self.logs)
         p = dev.prompts[0]
         self.assertIn("EVOLVE-BLOCK", p)
         self.assertIn("pareto", p.lower())
@@ -130,7 +136,7 @@ class DreamTest(unittest.TestCase):
 
     def test_missing_policy_seeded_from_package(self):
         (self.pdir / "method.py").unlink()
-        rep = run_dream(self.pdir, self.worlds, Dev(), CFG, self.logs)
+        rep = run_dream(self.pdir, self.worlds, Dev(), DREAM_CFG, self.logs)
         self.assertTrue((self.pdir / "method.py").exists())
         self.assertTrue(rep["incumbent_reward"] > 0)
 

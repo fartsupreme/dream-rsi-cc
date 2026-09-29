@@ -33,7 +33,7 @@ from drsi.dream import SEED_POLICY, deploy_checks, run_dream, split_evolve
 from drsi.novelty import check
 from drsi.replay import evaluate_policy
 from drsi.store import make_node
-from tests.helpers import ScriptedLLM
+from tests.helpers import ScriptedLLM, own_worlds
 from tests.test_dream import Dev, serial_policy
 from tests.test_policy import chain_world
 from tests import test_round18  # the module, so its tests are not collected again here
@@ -81,7 +81,10 @@ class ReplayLiveGapTest(unittest.TestCase):
         pdir = self.root / "policy"
         pdir.mkdir()
         (pdir / "method.py").write_text(SEED_POLICY.read_text())
-        self.assertFalse(run_dream(pdir, worlds, Dev(no_plateau), CFG, self.root / "logs")["deployed"])
+        rep = run_dream(pdir, own_worlds(SEED_POLICY.read_text(), 4, 24, plateau=True), Dev(no_plateau), CFG,
+                        self.root / "logs")
+        self.assertIsNone(rep["skipped"], rep)
+        self.assertFalse(rep["deployed"], rep)
 
     def test_a_penalty_gain_that_is_live_parallelism_still_deploys(self):
         serial = self.root / "serial.py"

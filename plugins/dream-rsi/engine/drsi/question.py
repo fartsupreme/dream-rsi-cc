@@ -227,18 +227,28 @@ class ReplayQuestion(QuestionBase):
         fails = Counter(n.get("fail_class") for n in nodes if not n.get("valid", n.get("score") is not None)
                         and n.get("fail_class"))
         self._fail_class = fails.most_common(1)[0][0] if fails else "ok"  # "ok": the scorer ran and found it invalid
-        self._made = 0  # attempts revealed past the record so far
+        # A root is replayed in the slot it was opened in live (its recorded cell, "root:<j>"), so a policy replaying
+        # its own round meets every attempt where it met it; a world without cells opens its roots in listed order.
+        slots: dict[int, str] = {}
+        for r in self._roots:
+            c = self._rec[r].get("cell")
+            if isinstance(c, str) and c.startswith(ROOT) and c[len(ROOT):].isdigit():
+                slots.setdefault(int(c[len(ROOT):]), r)
+        self._slot = slots if self._roots and len(slots) == len(self._roots) else dict(enumerate(self._roots))
+        self._made = 0  # ids made for attempts past the record
+        self._off = 0  # probes past the record (evaluator-side: where replay stops being what happened)
+        self._synthetic: set[str] = set()
         super().__init__(max_parallelism, world.get("baseline", 0.0), max_probes)
 
     def _root_capacity(self) -> int | None:
         """Unbounded under a budget, as live. With no budget the recorded roots are the limit, or a run that
         explores until nothing is legal would never end."""
-        return None if self._max_probes is not None else len(self._roots)
+        return None if self._max_probes is not None else (max(self._slot) + 1 if self._slot else 0)
 
     def _recorded(self, cell: str) -> dict | None:
         if cell.startswith(ROOT):
-            j = int(cell[len(ROOT):])
-            return self._rec[self._roots[j]] if j < len(self._roots) else None
+            nid = self._slot.get(int(cell[len(ROOT):]))
+            return self._rec[nid] if nid is not None else None
         kids = [k for k in self._kids.get(cell, []) if k not in self._obs]
         return self._rec[kids[0]] if kids else None
 
@@ -251,6 +261,8 @@ class ReplayQuestion(QuestionBase):
             if nid not in self._rec and nid not in self._obs:
                 break
         family = None if cell.startswith(ROOT) else self._obs[cell].family
+        self._off += 1
+        self._synthetic.add(nid)
         return {"id": nid, "score": None, "valid": False, "fail_class": self._fail_class, "family": family}
 
     def _expand(self, cells):
@@ -261,3 +273,107 @@ class ReplayQuestion(QuestionBase):
                 node = self._past_record(c)
             out.append(node)
         return out
+
+
+class PolicyQuestion:
+    """What a policy is handed, in replay, in the behaviour gate and in a live round alike. It is the question's API
+    with every attempt shown under an id that says only when it was revealed ("a1", "a2", ...), and it prints as
+    "<question>", so the recorded ids and the class doing the work (a replayed or a live question) never reach the
+    policy: whatever a policy can observe, it observes the same way everywhere. The wrapped question enforces every
+    rule; the checks here only keep refusals in the ids the policy was shown."""
+
+    def __init__(self, question: QuestionBase):
+        self._q = question
+        self._shown: dict[str, str] = {}  # attempt id -> shown id
+        self._real: dict[str, str] = {}  # shown id -> attempt id
+
+    def __repr__(self) -> str:
+        return "<question>"
+
+    __str__ = __repr__
+
+    @property
+    def max_parallelism(self) -> int:
+        return self._q.max_parallelism
+
+    @property
+    def baseline_score(self) -> float:
+        return self._q.baseline_score
+
+    @property
+    def probes(self) -> int:
+        return self._q.probes
+
+    @property
+    def rounds(self) -> int:
+        return self._q.rounds
+
+    @property
+    def batch_sizes(self) -> list[int]:
+        return self._q.batch_sizes
+
+    @property
+    def curve(self) -> list[tuple[int, float | None]]:
+        return self._q.curve
+
+    def reset(self) -> None:
+        self._q.reset()
+        self._shown.clear()
+        self._real.clear()
+
+    def best_score(self) -> float | None:
+        return self._q.best_score()
+
+    def opened_branches(self) -> list[int]:
+        return self._q.opened_branches()
+
+    def legal_roots(self) -> list[str]:
+        return self._q.legal_roots()
+
+    def legal_actions(self) -> list[str]:
+        return [c if c.startswith(ROOT) else self._shown[c] for c in self._q.legal_actions()]
+
+    def observed(self) -> dict[str, Observation]:
+        return {self._shown[i]: self._view(o) for i, o in self._q.observed().items()}
+
+    def meta(self, cell_id: str) -> CellMeta:
+        if cell_id.startswith(ROOT):
+            return self._q.meta(cell_id)
+        if cell_id not in self._real:
+            raise KeyError(cell_id)
+        m = self._q.meta(self._real[cell_id])
+        return CellMeta(branch=m.branch, attempt=m.attempt, parent_id=self._shown.get(m.parent_id) if m.parent_id
+                        else None, seq=m.seq, tags=m.tags)
+
+    def _view(self, o: Observation) -> Observation:
+        return Observation(id=self._shown[o.id], parent_id=self._shown[o.parent_id] if o.parent_id else None,
+                           branch=o.branch, attempt=o.attempt, seq=o.seq, score=o.score, valid=o.valid,
+                           fail_class=o.fail_class, family=o.family)
+
+    def probe_batch(self, cells, on_reveal=None) -> list[Observation | None]:
+        q = self._q
+        if q._probing:
+            raise IllegalBatch("probe_batch cannot be called from inside on_reveal")
+        cells = list(cells)
+        if not cells:
+            raise IllegalBatch("empty batch")
+        if any(type(c) is not str for c in cells):
+            raise IllegalBatch("cells must be plain strings")
+        if q._max_probes is not None and q.probes >= q._max_probes:
+            raise IllegalBatch(f"budget of {q._max_probes} probes is spent")
+        if len(set(cells)) != len(cells):
+            raise IllegalBatch(f"duplicate cells in batch: {cells}")
+        if len(cells) > q.max_parallelism:
+            raise IllegalBatch(f"batch of {len(cells)} exceeds max_parallelism {q.max_parallelism}")
+        legal = set(self.legal_actions())
+        bad = [c for c in cells if c not in legal]
+        if bad:
+            raise IllegalBatch(f"illegal cells: {bad}")
+
+        def revealed(o: Observation) -> None:
+            self._shown[o.id] = f"a{o.seq + 1}"  # reveal order is all a shown id says
+            self._real[self._shown[o.id]] = o.id
+            if on_reveal:
+                on_reveal(self._view(o))
+        out = q.probe_batch([c if c.startswith(ROOT) else self._real[c] for c in cells], on_reveal=revealed)
+        return [None if o is None else self._view(o) for o in out]

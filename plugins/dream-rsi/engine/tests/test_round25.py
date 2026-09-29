@@ -36,7 +36,7 @@ from drsi.novelty import check
 from drsi.question import ReplayQuestion
 from drsi.replay import evaluate_policy
 from drsi.store import DEFAULT_CONFIG, Tree, make_node
-from tests.helpers import ScriptedLLM
+from tests.helpers import ScriptedLLM, own_worlds
 from tests.test_dream import Dev
 from tests.test_policy import chain_world
 from tests.test_round20 import FAMS, tree
@@ -145,7 +145,8 @@ class ReplayGainTest(unittest.TestCase):
         pdir.mkdir()
         (pdir / "method.py").write_text(SEED_POLICY.read_text())
         cfg = {"search": {"W": 4, "K1": 6}, "dream": dict(DEFAULT_CONFIG["dream"]) | {"M": 1}}
-        rep = run_dream(pdir, self.worlds, Dev(detector), cfg, Path(self.tmp.name) / "logs")
+        rep = run_dream(pdir, own_worlds(SEED_POLICY.read_text(), 4, 24), Dev(detector), cfg, Path(self.tmp.name) / "logs")
+        self.assertIsNone(rep["skipped"], rep)
         self.assertFalse(rep["deployed"], rep["revisions"])
 
     def test_the_clock_advances_every_batch(self):

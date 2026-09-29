@@ -171,7 +171,8 @@ class CLILayer2Test(unittest.TestCase):
         self.assertIn("reward", out)
         code, out = self.run_cli("dream", "-c", "toy")
         self.assertEqual(code, 0, out)
-        self.assertIn("kept the incumbent", out)
+        self.assertIn("dream skipped", out)  # one round cannot reach dream.min_worlds (4), in drsi dream as in the loop
+        self.assertIn("min_worlds", out)
 
     def test_replay_without_worlds_says_so(self):
         code, out = self.run_cli("replay", "-c", "toy")

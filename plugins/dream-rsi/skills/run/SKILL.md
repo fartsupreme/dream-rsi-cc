@@ -20,7 +20,7 @@ allowed-tools:
    tries) -> implement the accepted proposal. The orchestrator then rejects any change outside
    `workspace.mutable` (measured from the campaign base) and scores a clean checkout of the commit with the
    campaign scorer, one scorer at a time. The dream phase rewrites only the policy's EVOLVE block and
-   deploys a revision only if replay reward does not drop. To end a run early, use
+   deploys a revision only when replay on the incumbent's own rounds shows it better beyond resampling noise. To end a run early, use
    `"${CLAUDE_PLUGIN_ROOT}/bin/drsi" stop -c <campaign>`: it ends the run and everything it started.
 4. When it finishes, report per round: attempts, valid, best score vs baseline, and whether a new policy was
    deployed. Each attempt's code is on branch `drsi/<node>` in `~/.dream-rsi/campaigns/<campaign>/repo`.

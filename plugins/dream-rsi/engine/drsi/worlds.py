@@ -42,8 +42,29 @@ def world_from_tree(tree: Tree, world_id: str, baseline: float = 0.0, ids: set[s
         parent = n["parent"] if (ids is None or n["parent"] in ids) else None
         nodes.append({"id": n["id"], "parent": parent, "score": score if valid else None, "valid": valid,
                       "fail_class": n.get("fail_class"), "family": (n.get("fingerprint") or {}).get("family"),
-                      "model": (n.get("worker") or {}).get("model")})
+                      "model": (n.get("worker") or {}).get("model"), "cell": (n.get("ext") or {}).get("cell")})
     return {"id": world_id, "baseline": baseline, "nodes": nodes}
+
+
+def with_cells(worlds: list[dict], tree: Tree) -> list[dict]:
+    """Worlds frozen before worlds kept each attempt's cell (the root slot or parent it was opened from) get it from
+    the tree, so replay opens each recorded root in the slot it was opened in live. Returns copies; the files stay."""
+    out = []
+    for w in worlds:
+        nodes = []
+        for n in w["nodes"]:
+            if n.get("cell") is None and n["id"] in tree:
+                n = dict(n, cell=(tree.get(n["id"]).get("ext") or {}).get("cell"))
+            nodes.append(n)
+        out.append(dict(w, nodes=nodes))
+    return out
+
+
+def informative(worlds: list[dict]) -> int:
+    """Worlds that can separate two policies: a valid score and at least one continuation (a world of roots alone
+    plays out the same for every policy)."""
+    return sum(1 for w in worlds if any(n.get("valid") and n.get("score") is not None for n in w["nodes"])
+               and any(n.get("parent") for n in w["nodes"]))
 
 
 def freeze_world(pool, world: dict) -> Path:

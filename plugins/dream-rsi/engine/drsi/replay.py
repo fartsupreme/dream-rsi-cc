@@ -68,6 +68,19 @@ def world_best(world: dict) -> float | None:
     return max(vals) if vals else None
 
 
+SCORES = ("default", "sweep")
+CURVES = ("canonical", "reveal", "batch", "clock")
+
+
+def _ranking(score: str, penalty: str, curve: str) -> None:
+    if score not in SCORES:
+        raise ValueError(f"score {score!r} is not one of {SCORES}")
+    if penalty != "live":
+        raise ValueError(f"penalty {penalty!r} is not supported; the parallel penalty is live fill (\"live\")")
+    if curve not in CURVES:
+        raise ValueError(f"curve {curve!r} is not one of {CURVES}")
+
+
 def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, beta2: float,
                score: str = "default", penalty: str = "live", curve: str = "canonical") -> dict:
     """Ranking: average the anytime curves over the worlds that carry signal (at least one valid reachable
@@ -85,8 +98,7 @@ def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, 
     reward. curve="reveal" is the old policy-ordered point per cell; "batch" is one point per batch (this
     favours serial policies: a wide batch is credited only when all of it is spent); "clock" puts decision
     rounds / K1 on the work axis."""
-    if penalty != "live":
-        raise ValueError(f"penalty {penalty!r} is not supported; the parallel penalty is live fill (\"live\")")
+    _ranking(score, penalty, curve)
     swept_keys = set(raw.get("swept", raw["runs"].keys()))
     default = str(float(raw["default_beta"]))
     scored_keys = {default} if score == "default" else swept_keys
@@ -147,8 +159,7 @@ def evaluate_policy(policy_path, worlds: list[dict], W: int, betas, budget, lam:
     run, which no live round has."""
     if budget is None:
         raise ValueError("evaluate_policy needs a budget (K1 x W): replay ranks a policy as a live round runs it")
-    if penalty != "live":
-        raise ValueError(f"penalty {penalty!r} is not supported; the parallel penalty is live fill (\"live\")")
+    _ranking(score, penalty, curve)
     policy_path = Path(policy_path).resolve()
     problems = check_policy_source(policy_path.read_text())
     if problems:
@@ -192,7 +203,9 @@ def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
                 q.probe_batch(batch)
                 t += 1  # every batch is a live batch: each probe is an attempt
                 curve_clock.append([t, q.best_score()])
-                for k, nid in enumerate(sorted(q._order[seen:])):
+                # a batch's attempts run in parallel live: credit them in a fixed order the policy cannot choose
+                # (recorded ids, then those made past the record, whose names say nothing about the world)
+                for k, nid in enumerate(sorted(q._order[seen:], key=lambda i: (i in q._synthetic, i))):
                     o = q._obs[nid]
                     if o.valid and o.score is not None and (best is None or o.score > best):
                         best = o.score
@@ -202,6 +215,7 @@ def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
             # out); each counts as an empty batch
             unspent = -(-(budget - q._probes) // max(1, W)) if budget is not None and q._probes < budget else 0
             out.append({"probes": q._probes, "rounds": q._rounds, "best": q.best_score(), "unspent": unspent,
+                        "off_record": q._off,  # probes the record could not answer: where replay is not what happened
                         "requested": list(q._requested), "batch_sizes": list(q._batch_sizes),
                         "curve": [list(p) for p in q._curve], "curve_batch": curve_batch, "curve_clock": curve_clock,
                         "curve_canonical": curve_canonical})

@@ -13,6 +13,7 @@ from pathlib import Path
 from drsi.dream import behaviour_differs, deploy_checks, run_dream, split_evolve
 from drsi.question import ReplayQuestion
 from drsi.replay import evaluate_policy
+from tests.helpers import own_worlds
 from tests.test_dream import Dev, replace_block, serial_policy
 from tests.test_policy import SEED, chain_world
 
@@ -77,26 +78,32 @@ class DeploySupportTest(unittest.TestCase):
 
     def test_without_the_realized_penalty_even_the_old_rule_keeps_the_incumbent(self):
         # it deployed stop-after-roots under the "realized" penalty (rounds 19-24); that penalty is gone (round 25)
-        (self.pdir / "method.py").write_text(seed_with_topup(SEED.read_text()))
-        rep = run_dream(self.pdir, self.worlds, Dev(stop_after_roots), OLD, self.logs)
+        inc = seed_with_topup(SEED.read_text())
+        (self.pdir / "method.py").write_text(inc)
+        rep = run_dream(self.pdir, own_worlds(inc, 6, 24), Dev(stop_after_roots), OLD, self.logs)
+        self.assertIsNone(rep["skipped"], rep)
         self.assertFalse(rep["deployed"], rep["revisions"])
 
     def test_stop_after_roots_is_not_deployed(self):
-        (self.pdir / "method.py").write_text(seed_with_topup(SEED.read_text()))
-        rep = run_dream(self.pdir, self.worlds, Dev(stop_after_roots), CFG, self.logs)
+        inc = seed_with_topup(SEED.read_text())
+        (self.pdir / "method.py").write_text(inc)
+        rep = run_dream(self.pdir, own_worlds(inc, 6, 24), Dev(stop_after_roots), CFG, self.logs)
+        self.assertIsNone(rep["skipped"], rep)
         self.assertFalse(rep["deployed"], rep["revisions"])
 
     def test_a_change_that_only_acts_when_roots_run_out_cannot_act_in_replay(self):
         # round 24: replay root slots no longer run out (as live), so the old rule's false gain is gone at the source
         (self.pdir / "method.py").write_text(SEED.read_text())
-        rep = run_dream(self.pdir, self.worlds, Dev(seed_with_topup), OLD, self.logs)
+        rep = run_dream(self.pdir, own_worlds(SEED.read_text(), 6, 24), Dev(seed_with_topup), OLD, self.logs)
+        self.assertIsNone(rep["skipped"], rep)
         self.assertFalse(rep["deployed"], rep["revisions"])
         self.assertAlmostEqual(rep["revisions"][0]["reward"], rep["incumbent_reward"])
 
     def test_change_that_only_acts_when_roots_run_out_is_not_deployed(self):
         (self.pdir / "method.py").write_text(SEED.read_text())
-        rep = run_dream(self.pdir, self.worlds, Dev(seed_with_topup), dict(CFG, dream=dict(CFG["dream"], bootstrap=0)),
-                        self.logs)
+        rep = run_dream(self.pdir, own_worlds(SEED.read_text(), 6, 24), Dev(seed_with_topup),
+                        dict(CFG, dream=dict(CFG["dream"], bootstrap=0)), self.logs)
+        self.assertIsNone(rep["skipped"], rep)
         self.assertFalse(rep["deployed"], rep)
 
     def test_gate_sees_no_live_difference_for_the_topup(self):
@@ -142,13 +149,6 @@ class DeploySupportTest(unittest.TestCase):
         kw = dict(W=6, betas=CFG["dream"]["betas"], budget=24, lam=0.25, beta1=0.01, beta2=0.01)
         ra, rb = evaluate_policy(a, self.worlds, **kw), evaluate_policy(b, self.worlds, **kw)
         self.assertAlmostEqual(ra["reward"], rb["reward"])
-
-    def test_better_live_policy_still_deploys(self):
-        from tests.test_dream import serial_policy, seed_block
-        (self.pdir / "method.py").write_text(serial_policy())
-        worlds = [chain_world(), chain_world(n_roots=3, depth=8, climb=0.05), chain_world(8, 5, 0.08)]
-        rep = run_dream(self.pdir, worlds, Dev(replace_block(seed_block())), CFG, self.logs)
-        self.assertTrue(rep["deployed"], rep)
 
 
 class MinWorldsTest(unittest.TestCase):
