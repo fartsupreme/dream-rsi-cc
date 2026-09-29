@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .guard import check_policy_source
 from .question import IllegalBatch, ReplayQuestion
-from .reward import attainment, eq1_value, mean_curve_auc, parallel_penalty
+from .reward import attainment, eq1_value, mean_curve_auc, parallel_penalty, support_penalty
 
 ENGINE_DIR = Path(__file__).resolve().parents[1]
 RUNNER = Path(__file__).resolve().parent / "replay_runner.py"
@@ -68,15 +68,30 @@ def world_best(world: dict) -> float | None:
     return max(vals) if vals else None
 
 
-def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, beta2: float) -> dict:
-    """Ranking: per swept beta, average the anytime curves over the worlds that carry signal (at least one
-    valid reachable score); integrate the frontier over those per-beta mean curves; subtract lambda times
-    the parallel penalty of the runs on those worlds. Worlds without signal cannot favour any policy."""
+def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, beta2: float,
+               score: str = "default", penalty: str = "support", curve: str = "canonical") -> dict:
+    """Ranking: average the anytime curves over the worlds that carry signal (at least one valid reachable
+    score), integrate over work, subtract lambda times the parallel penalty. Worlds without signal cannot favour
+    any policy.
+
+    score="default" ranks the policy at the beta it runs live (its class default; live_runner instantiates
+    OptimalPolicy() with no beta), so behaviour at betas that never run live cannot earn reward; the swept betas
+    stay in the report. score="sweep" is the old frontier over the per-beta mean curves.
+    penalty="support" charges only batches the record can answer (reward.support_penalty); penalty="realized"
+    is the old 1 - mean revealed batch / W, which charges running out of recorded roots and probing the end of
+    a recorded branch, neither of which exists live.
+    curve="canonical" (default) keeps one anytime point per revealed cell but credits the cells of a batch in a
+    fixed order (by node id): live they run in parallel, so the order a policy lists them in must not earn
+    reward. curve="reveal" is the old policy-ordered point per cell; "batch" is one point per batch (this
+    favours serial policies: a wide batch is credited only when all of it is spent); "clock" puts decision
+    rounds / K1 on the work axis."""
     swept_keys = set(raw.get("swept", raw["runs"].keys()))
+    default = str(float(raw["default_beta"]))
+    scored_keys = {default} if score == "default" else swept_keys
     signal = [i for i, w in enumerate(worlds) if world_best(w) is not None]
-    per_beta, curves = {}, {}
+    per_beta, curves, pens = {}, {}, {}
     for beta, rows in raw["runs"].items():
-        atts, works, eq1s, sizes, pts = [], [], [], [], []
+        atts, works, eq1s, sizes, pts, support = [], [], [], [], [], []
         for wi in signal:
             world, row = worlds[wi], rows[wi]
             size = max(1, len(reachable(world)))
@@ -87,29 +102,44 @@ def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, 
             works.append(row["probes"] / size)
             eq1s.append(eq1_value(a, row["probes"], row["rounds"], beta1, beta2))
             sizes += row["batch_sizes"]
-            pts.append([(p / size, attainment(b, base, best_w)) for p, b in row.get("curve", [])])
+            support += [tuple(x) for x in row.get("support", [])]
+            if curve == "clock":  # x = live decision rounds used / K1: the wall clock of a live round
+                kmax = max(1, int(raw.get("kmax") or 1))
+                pts.append([(t / kmax, attainment(b, base, best_w)) for t, b in row.get("curve_clock", [])])
+            else:
+                key = {"batch": "curve_batch", "canonical": "curve_canonical"}.get(curve, "curve")
+                raw_pts = row.get(key, row.get("curve", []))
+                pts.append([(p / size, attainment(b, base, best_w)) for p, b in raw_pts])
         n = max(1, len(signal))
         per_beta[beta] = {"attainment": sum(atts) / n, "work": sum(works) / n, "eq1": sum(eq1s) / n,
                           "batch_sizes": sizes, "per_world_attainment": atts}
-        if beta in swept_keys:
+        if beta in scored_keys:
             curves[beta] = pts
-    default = str(float(raw["default_beta"]))
+            pens[beta] = support_penalty(support, W) if penalty == "support" else parallel_penalty(sizes, W)
     swept = {b: r for b, r in per_beta.items() if b in swept_keys}
     auc = mean_curve_auc(curves) if signal else 0.0
-    pens = [parallel_penalty(r["batch_sizes"], W) for r in swept.values()]
-    pen = sum(pens) / len(pens) if pens else 1.0
+    pen = sum(pens.values()) / len(pens) if pens else 1.0
 
     def public(r):
         return {k: v for k, v in r.items() if k != "batch_sizes"} | {
             "mean_batch": sum(r["batch_sizes"]) / len(r["batch_sizes"]) if r["batch_sizes"] else 0.0}
     return {"ok": True, "reward": auc - lam * pen, "auc": auc, "parallel_penalty": pen,
-            "signal_worlds": len(signal), "default_beta": raw["default_beta"],
+            "signal_worlds": len(signal), "default_beta": raw["default_beta"], "scored_betas": sorted(scored_keys),
             "eq1_default_beta": per_beta[default]["eq1"], "default": public(per_beta[default]),
             "per_beta": {b: public(r) for b, r in swept.items()}}
 
 
+def resampled_reward(measured: dict, worlds: list[dict], idx: list[int], W: int, lam: float, beta1: float,
+                     beta2: float, score: str = "default", penalty: str = "support", curve: str = "canonical") -> float:
+    """The reward on a multiset of worlds (indices may repeat), for a paired bootstrap across worlds."""
+    sub = {"default_beta": measured["default_beta"], "swept": measured.get("swept"), "kmax": measured.get("kmax"),
+           "runs": {b: [rows[i] for i in idx] for b, rows in measured["runs"].items()}}
+    return _aggregate(sub, [worlds[i] for i in idx], W, lam, beta1, beta2, score, penalty, curve)["reward"]
+
+
 def evaluate_policy(policy_path, worlds: list[dict], W: int, betas, budget, lam: float, beta1: float,
-                    beta2: float, timeout: int = 120) -> dict:
+                    beta2: float, timeout: int = 120, score: str = "default", penalty: str = "support",
+                    curve: str = "canonical") -> dict:
     policy_path = Path(policy_path).resolve()
     problems = check_policy_source(policy_path.read_text())
     if problems:
@@ -131,8 +161,10 @@ def evaluate_policy(policy_path, worlds: list[dict], W: int, betas, budget, lam:
     except IllegalBatch as e:
         return {"ok": False, "stage": "run", "error": f"trace does not replay: {e}"}
     measured["swept"] = [str(float(b)) for b in betas]
-    rep = _aggregate(measured, worlds, W, lam, beta1, beta2)
+    rep = _aggregate(measured, worlds, W, lam, beta1, beta2, score, penalty, curve)
     rep["traces_replayed"] = True
+    rep["measured"] = measured  # per-world metrics, for the deploy rule's paired bootstrap
+    rep["traces"] = first  # the raw action traces, for the live-behaviour gate
     return rep
 
 
@@ -143,11 +175,29 @@ def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
         out = []
         for world, row in zip(worlds, rows):
             q = ReplayQuestion(world, W, max_probes=budget)
+            answerable, curve_batch, curve_clock, curve_canonical, t, best = [], [], [], [], 0, None
             for batch in row["trace"]:
                 if not isinstance(batch, list) or any(type(c) is not str for c in batch):
                     raise IllegalBatch("malformed trace")
+                ans = q.answerable(q.legal_actions())
+                seen, done = len(q._order), q._probes
                 q.probe_batch(batch)
+                answerable.append(ans)
+                for k, nid in enumerate(sorted(q._order[seen:])):
+                    o = q._obs[nid]
+                    if o.valid and o.score is not None and (best is None or o.score > best):
+                        best = o.score
+                    curve_canonical.append([done + k + 1, best])
+                if q.batch_sizes[-1]:
+                    curve_batch.append([q._probes, q.best_score()])
+                    if ans > 0:  # a batch the record cannot answer does not exist live: the clock does not move
+                        t += 1
+                        curve_clock.append([t, q.best_score()])
+            support = [[r, e, a] for r, e, a in zip(q.requested_sizes, q.empty_counts, answerable)]
             out.append({"probes": q._probes, "rounds": q._rounds, "best": q.best_score(),
-                        "batch_sizes": list(q._batch_sizes), "curve": [list(p) for p in q._curve]})
+                        "batch_sizes": list(q._batch_sizes), "curve": [list(p) for p in q._curve],
+                        "support": support, "curve_batch": curve_batch, "curve_clock": curve_clock,
+                        "curve_canonical": curve_canonical})
         runs[beta] = out
-    return {"ok": True, "default_beta": raw["default_beta"], "runs": runs}
+    return {"ok": True, "default_beta": raw["default_beta"], "runs": runs,
+            "kmax": max(1, (budget or W) // max(1, W))}

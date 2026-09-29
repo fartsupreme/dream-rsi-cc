@@ -42,8 +42,12 @@ DEFAULT_CONFIG = {
     "goal": "",
     "direction": "max",                  # max | min for the raw score
     "search": {"W": 4, "K1": 6, "K2": 8, "plateau": 3},
+    # score/penalty/curve: how replay ranks a policy (see replay._aggregate); a revision is deployed only on a
+    # paired-bootstrap gain (5th percentile above margin) that also changes live behaviour (behaviour_gate), and
+    # no dream runs until min_worlds worlds can separate policies.
     "dream": {"M": 3, "betas": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], "lambda": 0.25,
-               "beta1": 0.01, "beta2": 0.01},
+               "beta1": 0.01, "beta2": 0.01, "score": "default", "penalty": "support", "curve": "canonical",
+               "bootstrap": 500, "margin": 0.0, "behaviour_gate": True, "gate_worlds": 32, "min_worlds": 4},
     # Spending is neither capped nor tracked (operator directive, 2026-09-22).
     "llm": {"model": "opus", "classifier_model": "opus", "worker_model": "opus"},
     "map": {"max_chars": 16000},
@@ -292,6 +296,32 @@ class Tree:
                     else:
                         node[k] = v
             self._write_locked()
+
+    def prune(self, ids) -> list[str]:
+        """Remove these nodes (the one operation that drops recorded attempts; see prune.py). A kept node whose parent
+        goes moves to its nearest kept ancestor, or becomes a root, and seq is recomputed below every moved node.
+        Returns the ids that moved."""
+        gone = {str(i) for i in ids}
+        with _locked(self.path):
+            nodes = self._read()
+            by_id = {n["id"]: n for n in nodes}
+            kept = [n for n in nodes if n["id"] not in gone]
+            moved, affected = [], set()
+            for n in kept:  # insertion order: a parent always comes before its children
+                p = n["parent"]
+                if p in gone:
+                    while p is not None and p in gone:
+                        p = by_id[p]["parent"]
+                    n["parent"] = p
+                    moved.append(n["id"])
+                    affected.add(n["id"])
+                elif p in affected:
+                    affected.add(n["id"])
+                if n["id"] in affected:
+                    n["seq"] = 0 if n["parent"] is None else (by_id[n["parent"]]["seq"] or 0) + 1
+            self._load(kept)
+            self._write_locked()
+            return moved
 
     def _write_locked(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

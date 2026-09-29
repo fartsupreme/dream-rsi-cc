@@ -173,14 +173,27 @@ expect a campaign's first rounds to find its loopholes.
   and is exhausted. Only leaves and root slots are actions (A(T) = {r} ∪ leaves), so siblings under an
   interior node are unreachable in replay. A world's target and its work normalisation are therefore
   computed over reachable attempts only. Probes that reveal nothing don't count as parallel work.
-- **Reward:** Eq. 1 `V = attainment − β1·N + β2·N/max(1,k)` (β1 = β2 = 0.01) is reported per beta, as a
-  mean over worlds. Policies are ranked by B.2's Pareto AUC. For each swept beta (`[0, .2, .4, .6, .8, 1]`),
-  every run's anytime curve (attainment reached with at most x of the work) is averaged over the worlds that
-  carry signal. The frontier over those per-beta mean curves is integrated over work in [0, 1], minus
-  λ = 0.25 × the parallel penalty.
+- **Reward:** the paper states Eq. 1 `V = max s_v − β1·N + β2·N/max(1,k)` in its method section but ranks
+  policies by `pareto.auc − λ · parallel_penalty` over a beta sweep in the prompt it ran (Appendix B.2); the two
+  disagree. Here Eq. 1 (with attainment for s_v, β1 = β2 = 0.01) is reported, and policies are ranked by an
+  anytime AUC: a run's curve of attainment reached with at most x of the work, averaged over the worlds that
+  carry signal and integrated over work in [0, 1], minus λ = 0.25 × the parallel penalty.
+  - The policy is scored at its own default beta, the one that runs live; the sweep over
+    `[0, .2, .4, .6, .8, 1]` is reported but earns nothing, so behaviour at betas that never run cannot win.
+  - The parallel penalty is 1 − the mean batch fill, where a batch is full when it probes every cell the record
+    can answer, up to W. Running out of recorded roots or probing the end of a recorded branch is not charged
+    (live has neither), and padding a batch with dead cells earns nothing. Under the old penalty a policy that
+    opened the roots and stopped outranked one that refined them.
+  - The cells of one batch are credited in a fixed order: they run in parallel live, so listing order earns
+    nothing.
   - Reaching good attempts sooner scores higher even when every run explores the whole world.
-  - One beta applies to every world, so a policy can't pick its best beta per world.
   - Worlds without a single valid reachable score can't favour any policy.
+- **Deploying a revision:** strictly better replay reward is not enough. The 5th percentile of a paired
+  bootstrap of the reward difference across worlds must exceed `dream.margin`, and the revision must change what
+  the policy does on live-like trees (unbounded roots, no branch ends); a change that acts only when recorded
+  roots or branches run out changes nothing live. A tie keeps the incumbent. No dream runs until
+  `dream.min_worlds` (default 4) worlds can separate policies (a valid score and at least one continuation).
+  The old ranking stays available as `dream.score = "sweep"`, `dream.penalty = "realized"`, `dream.curve = "reveal"`.
 - **Parallel attempts:** the orchestrator's checks within a round are two-phase claims. Each claim is
   recorded under a lock and then judged without the lock, so checks run concurrently, but each one sees every
   claim before it. Claims from an interrupted earlier round are not treated as in flight.
@@ -204,6 +217,12 @@ expect a campaign's first rounds to find its loopholes.
   current scorer on each live attempt's own commit, as the loop scores it, keeps the old reading on the node
   (`artifacts.rescored`), judges every live outcome again against its parent's score, and updates the frozen round
   worlds and the map. Attempts that never reached the scorer (not novel, out of scope, a failed worker) are left alone.
+- **Pruning:** `drsi prune -c NAME --error-match TEXT` (or `--ids a,b,...`, `--dry-run` first) removes recorded
+  attempts that did no work: a live attempt that failed as a worker or orchestration error, with no score and no
+  changed files. It re-roots anything that continued from one, drops them from the frozen round worlds (a world
+  left empty goes), deletes their branches, worktrees and proposal directories, withdraws their novelty claims, and
+  logs each removal to `logs/prune.jsonl`. An attempt that did work is refused whatever it matches, and while a run
+  is live the round it is still running is left alone.
 - **Worker models:** workers run on `llm.worker_model` (default `opus`). To draw ideas from more than one model at once,
   set `llm.worker_models` to a list: slot i of each batch runs `worker_models[i % len]`, so `["opus", "fable"]` with
   `search.W = 6` runs three of each. One model proposes and builds an attempt, and every attempt records its model.

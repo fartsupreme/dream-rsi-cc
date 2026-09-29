@@ -599,6 +599,13 @@ def _has_signal(worlds: list[dict]) -> bool:
     return any(any(n.get("valid") and n.get("score") is not None for n in w["nodes"]) for w in worlds)
 
 
+def _informative(worlds: list[dict]) -> int:
+    """Worlds that can separate two policies: a valid score and at least one continuation (a world of roots
+    alone plays out the same for every policy)."""
+    return sum(1 for w in worlds if any(n.get("valid") and n.get("score") is not None for n in w["nodes"])
+               and any(n.get("parent") for n in w["nodes"]))
+
+
 def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=None,
                history_world: dict | None = None, progress=None) -> dict:
     say = progress or (lambda msg: None)
@@ -613,8 +620,9 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
         summary = live_round(camp, load_policy(policy_dir / "method.py"), runner)
         say(f"{round_id}: {summary['attempts']} attempts, {summary['valid']} valid, best {summary['best_score']}")
         worlds = load_worlds(camp.root / "trace_pool") + ([history_world] if history_world else [])
-        if not _has_signal(worlds):
-            say(f"{round_id}: no valid scored attempt in any world yet; dream skipped")
+        need, k = int(camp.config["dream"].get("min_worlds", 4)), _informative(worlds)
+        if k < need:  # too few worlds to tell policies apart: a dream would spend developer calls on noise
+            say(f"{round_id}: {k} world(s) can inform a dream, fewer than dream.min_worlds = {need}; dream skipped")
             rounds.append(summary | {"dream": {"deployed": False, "version": None, "skipped": True,
                                                "incumbent_reward": None, "best_reward": None}})
             continue

@@ -60,7 +60,7 @@ class LiveTest(unittest.TestCase):
             "goal": "maximise value.txt", "scorer": {"cmd": SCORER, "timeout_s": 30},
             "workspace": {"repo": str(self.src), "mutable": ["value.txt"]},
             "search": {"W": 2, "K1": 3, "plateau": 3},
-            "dream": {"M": 1, "betas": [0.0, 1.0], "lambda": 0.25, "beta1": 0.01, "beta2": 0.01},
+            "dream": {"M": 1, "betas": [0.0, 1.0], "lambda": 0.25, "beta1": 0.01, "beta2": 0.01, "min_worlds": 1},
             "live": {"require_check": False},
         }, home=root / "home")
         self.policy = load_policy(SEED)
