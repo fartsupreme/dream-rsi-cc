@@ -500,11 +500,13 @@ def cmd_replay(a) -> int:
         print(f"warning: {w}")
     params = _params(cfg)
     rep = evaluate_policy(Path(a.policy) if a.policy else _policy_path(camp), worlds, **params)  # as the dream ranks
-    inc = evaluate_policy(_policy_path(camp), worlds, **params)
-    if inc.get("ok"):  # the dream compares only where the deployed policy's replay stays on the record
+    inc = evaluate_policy(_policy_path(camp), worlds, **params) if a.policy else rep
+    if inc.get("ok"):  # the dream compares only on worlds recorded live where the deployed policy stays on the record
         rows = inc["measured"]["runs"][str(float(inc["default_beta"]))]
-        on = [w for w, row in zip(worlds, rows) if row["off_record"] == 0]
-        print(f"the deployed policy stays on the record in {len(on)} of {len(worlds)} world(s): the dream compares there")
+        live = [row for w, row in zip(worlds, rows) if w.get("live", True)]
+        on = [row for row in live if row["off_record"] == 0]
+        print(f"the deployed policy stays on the record in {len(on)} of {len(live)} world(s) recorded live: the dream "
+              "compares there")
     if not rep.get("ok"):
         print(f"policy failed at {rep.get('stage')}: {rep.get('error')}")
         return 1

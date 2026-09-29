@@ -250,8 +250,8 @@ class ReplayQuestion(QuestionBase):
             c = self._rec[r].get("cell")
             if isinstance(c, str) and c.startswith(ROOT) and c[len(ROOT):].isdigit():
                 slots.setdefault(int(c[len(ROOT):]), r)
-        has_cells = any(self._rec[n].get("cell") is not None for n in self._rec)
-        self._slot = slots if has_cells else dict(enumerate(self._roots))
+        self._has_cells = any(self._rec[n].get("cell") is not None for n in self._rec)
+        self._slot = slots if self._has_cells else dict(enumerate(self._roots))
         self._off = 0  # probes past the record (evaluator-side: where replay stops being what happened)
         super().__init__(max_parallelism, world.get("baseline", 0.0), max_probes)
 
@@ -265,8 +265,9 @@ class ReplayQuestion(QuestionBase):
             nid = self._slot.get(int(cell[len(ROOT):]))
             return self._rec[nid] if nid is not None else None
         kids = [k for k in self._kids.get(cell, []) if k not in self._obs]
-        opened = [k for k in kids if self._rec[k].get("cell") == cell]  # the child opened from this leaf, live
-        return self._rec[(opened or kids)[0]] if kids else None
+        if self._has_cells:  # the child opened from this leaf live; one opened elsewhere (re-parented) is not
+            kids = [k for k in kids if self._rec[k].get("cell") == cell]
+        return self._rec[kids[0]] if kids else None
 
     def _expand(self, cells):
         out = []

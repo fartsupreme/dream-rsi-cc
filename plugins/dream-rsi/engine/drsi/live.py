@@ -636,7 +636,7 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
         summary = live_round(camp, load_policy(policy_dir / "method.py"), runner)
         say(f"{round_id}: {summary['attempts']} attempts, {summary['valid']} valid, best {summary['best_score']}")
         worlds = with_cells(load_worlds(camp.root / "trace_pool"), camp.tree) + ([history_world] if history_world else [])
-        need, k = int(camp.config["dream"].get("min_worlds", 4)), informative(worlds)
+        need, k = max(1, int(camp.config["dream"].get("min_worlds", 4))), informative(worlds)
         if k < need:  # too few worlds to tell policies apart: a dream would spend developer calls on noise
             say(f"{round_id}: {k} world(s) can inform a dream, fewer than dream.min_worlds = {need}; dream skipped")
             rounds.append(summary | {"dream": {"deployed": False, "version": None, "skipped": True,
