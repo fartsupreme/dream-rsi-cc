@@ -152,7 +152,7 @@ class DeploySupportTest(unittest.TestCase):
 
 
 class MinWorldsTest(unittest.TestCase):
-    """A dream phase needs enough informative worlds (a valid score and at least one continuation) to separate
+    """A dream phase needs enough informative worlds (a valid score; round 27: roots alone count too) to separate
     policies; below dream.min_worlds it is skipped and no developer call is made."""
 
     def setUp(self):
