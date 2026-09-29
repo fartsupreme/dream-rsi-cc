@@ -40,7 +40,7 @@ from .question import POLICY_HASH_SEED, ROOT, IllegalBatch, QuestionBase
 from .scorer import run_scorer
 from .store import Campaign, _atomic_write, make_node
 from .workspace import Workspaces, out_of_scope
-from .worlds import freeze_world, informative, load_worlds, with_cells, world_from_tree
+from .worlds import comparable, freeze_world, informative, load_worlds, with_cells, world_from_tree
 
 WORKER_REPORT_SCHEMA = {
     "type": "object",
@@ -620,8 +620,7 @@ def _has_signal(worlds: list[dict]) -> bool:
     return any(any(n.get("valid") and n.get("score") is not None for n in w["nodes"]) for w in worlds)
 
 
-def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=None,
-               history_world: dict | None = None, progress=None) -> dict:
+def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=None, progress=None) -> dict:
     say = progress or (lambda msg: None)
     policy_dir = camp.root / "policy"
     policy_dir.mkdir(exist_ok=True)
@@ -635,8 +634,8 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
         runner = LiveRunner(camp, worker_fn, indexer, round_id, log=say, checker=checker)
         summary = live_round(camp, load_policy(policy_dir / "method.py"), runner)
         say(f"{round_id}: {summary['attempts']} attempts, {summary['valid']} valid, best {summary['best_score']}")
-        worlds = with_cells(load_worlds(camp.root / "trace_pool"), camp.tree) + ([history_world] if history_world else [])
-        need, k = max(1, int(camp.config["dream"].get("min_worlds", 4))), informative(worlds)
+        worlds = with_cells(load_worlds(camp.root / "trace_pool"), camp.tree)
+        need, k = max(1, int(camp.config["dream"].get("min_worlds", 4))), informative(comparable(worlds))
         if k < need:  # too few worlds to tell policies apart: a dream would spend developer calls on noise
             say(f"{round_id}: {k} world(s) can inform a dream, fewer than dream.min_worlds = {need}; dream skipped")
             rounds.append(summary | {"dream": {"deployed": False, "version": None, "skipped": True,

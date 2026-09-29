@@ -26,7 +26,7 @@ from .dream import SEED_POLICY, _params, config_warnings, run_dream
 from .live import WORKER_REPORT_SCHEMA, WORKER_TOOLS, LiveRunner, run_cycles, write_map
 from .replay import evaluate_policy
 from .store import Campaign, default_home
-from .worlds import load_worlds, with_cells, world_from_tree
+from .worlds import comparable, load_worlds, with_cells, world_from_tree
 
 # Tests replace these. LLM_FACTORY(cfg, role) -> object with .json(prompt, schema);
 # WORKER_FACTORY(camp) -> worker_fn(workspace, prompt, system);
@@ -501,16 +501,19 @@ def cmd_replay(a) -> int:
     params = _params(cfg)
     rep = evaluate_policy(Path(a.policy) if a.policy else _policy_path(camp), worlds, **params)  # as the dream ranks
     inc = evaluate_policy(_policy_path(camp), worlds, **params) if a.policy else rep
-    if inc.get("ok"):  # the dream compares only on worlds recorded live where the deployed policy stays on the record
+    if inc.get("ok"):  # the dream compares only on comparable worlds where the deployed policy stays on the record
         rows = inc["measured"]["runs"][str(float(inc["default_beta"]))]
-        live = [row for w, row in zip(worlds, rows) if w.get("live", True)]
+        ok = comparable(worlds)
+        live = [row for w, row in zip(worlds, rows) if any(w is c for c in ok)]
         on = [row for row in live if row["off_record"] == 0]
-        print(f"the deployed policy stays on the record in {len(on)} of {len(live)} world(s) recorded live: the dream "
-              "compares there")
+        print(f"the deployed policy stays on the record in {len(on)} of {len(live)} world(s) recorded live with each "
+              "attempt's cell: the dream compares there")
     if not rep.get("ok"):
         print(f"policy failed at {rep.get('stage')}: {rep.get('error')}")
         return 1
-    print(f"worlds: {len(worlds)}  reward: {rep['reward']:.4f}  (AUC {rep['auc']:.4f}, "
+    hist = sum(1 for w in worlds if not w.get("live", True))
+    print(f"worlds: {len(worlds)}" + (" (with the imported history, which the dream does not compare on)" if hist else "")
+          + f"  reward: {rep['reward']:.4f}  (AUC {rep['auc']:.4f}, "
           f"parallel penalty {rep['parallel_penalty']:.4f})")
     for b, r in sorted(rep["per_beta"].items(), key=lambda x: float(x[0])):
         print(f"  beta {b}: attainment {r['attainment']:.3f}  work {r['work']:.3f}  mean batch {r['mean_batch']:.2f}")
@@ -582,8 +585,7 @@ def cmd_run(a) -> int:
     clean = False
     try:
         rep = run_cycles(camp, a.rounds, worker_fn=make_worker(camp), developer=make_developer(camp),
-                         indexer=make_indexer(camp), checker=make_checker(camp),
-                         history_world=_history_world(camp) if a.history else None, progress=print)
+                         indexer=make_indexer(camp), checker=make_checker(camp), progress=print)
         clean = True
     finally:
         stop_children()  # no child starts from here on, and every recorded group is killed
@@ -699,7 +701,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = with_c(sub.add_parser("run", help="Dream-RSI cycles: live round, then dream, repeated"))
     s.add_argument("--rounds", type=int, default=1)
-    s.add_argument("--history", action="store_true", help="also dream over the imported record")
+    s.add_argument("--history", action="store_true",
+                   help="no effect (kept for old command lines): the dream compares only rounds recorded live")
     s.set_defaults(fn=cmd_run)
 
     s = with_c(sub.add_parser("dream", help="improve the policy by replay over the frozen worlds"))

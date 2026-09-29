@@ -18,7 +18,7 @@ from pathlib import Path
 from .guard import ALLOWED_MODULES
 from .question import POLICY_HASH_SEED
 from .replay import CURVES, SCORES, _run_once, evaluate_policy, resampled_reward
-from .worlds import informative
+from .worlds import comparable, informative
 
 SEED_POLICY = Path(__file__).resolve().parent / "policy" / "method.py"
 START, END = "# EVOLVE-BLOCK-START", "# EVOLVE-BLOCK-END"
@@ -108,14 +108,17 @@ def config_warnings(cfg: dict) -> list[str]:
 
 
 def gate_worlds(n: int, W: int, budget: int, baseline: float = 0.0, lo: float = 0.0, hi: float = 1.0,
-                families: list[str] | None = None, fail_classes: list[str] | None = None) -> list[dict]:
+                families: list[str] | None = None, fail_classes: list[str] | None = None,
+                valid_classes: list[str] | None = None) -> list[dict]:
     """Synthetic live-like trees for the behaviour gate: more roots than a round can open and branches deeper
     than a round can go, so (as live) the record always answers. Scores are seeded: half the trees are random
-    walks, half independent draws, with a failure rate that varies per tree, placed in [lo, hi] over the campaign's
-    baseline, with the campaign's family names and failure classes, so they read like the campaign's own."""
+    walks (reflected at the bounds), half independent draws, with a failure rate that varies per tree, placed in
+    [lo, hi] over the campaign's baseline, with the campaign's family names and the classes its valid and failed
+    attempts carry, so they read like the campaign's own."""
     import random
     names = list(families) if families else [None]
-    fails = list(fail_classes) if fail_classes else ["ok", "agent_error"]
+    fails = list(fail_classes) if fail_classes else ["agent_error", "eval_error"]  # what a worker or scorer failure is
+    oks = list(valid_classes) if valid_classes else ["ok"]
     out = []
     for k in range(n):
         rng = random.Random(f"drsi-gate|{k}")
@@ -125,10 +128,13 @@ def gate_worlds(n: int, W: int, budget: int, baseline: float = 0.0, lo: float = 
             prev, s = None, rng.random()
             for dd in range(budget + 1):
                 s = s + rng.gauss(0, 0.1) if walk else rng.random()
+                while not 0.0 <= s <= 1.0:
+                    s = -s if s < 0 else 2.0 - s
                 valid = rng.random() < p_valid
                 nid = f"g{k}r{r}d{dd}"
                 nodes.append({"id": nid, "parent": prev, "score": lo + (hi - lo) * s if valid else None, "valid": valid,
-                              "fail_class": "ok" if valid else rng.choice(fails),
+                              "fail_class": (oks[0] if len(oks) == 1 else rng.choice(oks)) if valid
+                              else rng.choice(fails),
                               "family": rng.choice(names)})
                 prev = nid
         out.append({"id": f"gate{k}", "baseline": baseline, "nodes": nodes})
@@ -147,7 +153,9 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
     names = sorted({x["family"] for w in (worlds or []) for x in w["nodes"] if x.get("family")}) or None
     fails = sorted({x["fail_class"] for w in (worlds or []) for x in w["nodes"]
                     if not x.get("valid", True) and x.get("fail_class")}) or None
-    worlds = gate_worlds(n, W, budget, base, lo, hi, families=names, fail_classes=fails)
+    oks = sorted({x["fail_class"] for w in (worlds or []) for x in w["nodes"]
+                  if x.get("valid", True) and x.get("fail_class")}) or None
+    worlds = gate_worlds(n, W, budget, base, lo, hi, families=names, fail_classes=fails, valid_classes=oks)
     traces, probes = {}, {}
     with tempfile.TemporaryDirectory(prefix="drsi-gate-") as tmp:
         for label, path in (("cand", cand_path), ("inc", inc_path)):
@@ -307,7 +315,7 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
 
     inc_src = method.read_text()
     worlds_total, on_record = len(worlds), None
-    worlds = [w for w in worlds if w.get("live", True)]  # the history world was never a live round of any policy
+    worlds = comparable(worlds)  # live rounds whose every attempt keeps its cell
     started = time.monotonic()
     inc = evaluate_policy(method, worlds, **params) if worlds else {"ok": True, "reward": float("-inf"), "measured": {
         "runs": {}}, "default_beta": 0.0}
@@ -337,9 +345,9 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
         skipped = (f"the incumbent failed replay ({inc.get('stage', 'run')}: {inc.get('error', '')}); it is kept and "
                    "no revision is asked for")
     elif informative(worlds) < need:  # too few to tell policies apart: a dream would spend developer calls on noise
-        skipped = (f"{informative(worlds)} of {worlds_total} world(s) recorded live can inform a dream with the "
-                   f"incumbent's replay on the record throughout, fewer than dream.min_worlds = {need}; the incumbent "
-                   "is kept")
+        skipped = (f"{informative(worlds)} of {worlds_total} world(s) recorded live, each attempt with its cell, can "
+                   f"inform a dream with the incumbent's replay on the record throughout, fewer than dream.min_worlds "
+                   f"= {need}; the incumbent is kept")
     for m in range(0 if skipped else cfg["dream"]["M"]):
         with tempfile.TemporaryDirectory(prefix="drsi-dream-") as sb:
             sb = Path(sb)
