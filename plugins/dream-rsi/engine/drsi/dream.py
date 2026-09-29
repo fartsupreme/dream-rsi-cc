@@ -240,8 +240,8 @@ between `{START}` and `{END}`. Everything outside the block must stay byte-ident
 
 How the policy is scored: the evaluator replays it on frozen discovery trees at its class default beta (the
 beta that runs live) and, for the report only, at beta in {d['betas']}. After every reveal it records (work so far,
-attainment so far), crediting the cells of one batch in a fixed order (they run in parallel live, so the order
-you list them in does not count); these curves are averaged over the trees and integrated over work in [0, 1]
+attainment so far), crediting the cells of one batch worst first, best last (they run in parallel live, so the
+order you list them in does not count); these curves are averaged over the trees and integrated over work in [0, 1]
 (AUC), and
 reward = AUC - {d['lambda']} * parallel_penalty. attainment = how close the best revealed score gets to that
 tree's best (0..1); work = probes spent over the tree's recorded attempts; {PENALTY_TEXT} Higher is better: reveal the attempts that turn out best as early as possible, using full
@@ -324,7 +324,7 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
 
     best_path = method
     skipped = None
-    need = int(cfg["dream"].get("min_worlds", 4))
+    need = max(1, int(cfg["dream"].get("min_worlds", 4)))  # no world, nothing to compare on
     if not inc.get("ok"):  # nothing can be compared with an incumbent that does not replay: keep it, call no one
         skipped = (f"the incumbent failed replay ({inc.get('stage', 'run')}: {inc.get('error', '')}); it is kept and "
                    "no revision is asked for")

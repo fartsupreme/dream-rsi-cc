@@ -17,7 +17,7 @@ import json
 import subprocess
 import sys
 import tempfile
-import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -33,62 +33,91 @@ RUNNER = Path(__file__).resolve().parent / "replay_runner.py"
 def _run_once(job: dict, workdir: Path, seed: int, timeout: int) -> dict:
     """The policy's trace on every (beta, world) of the job, each run in a process of its own (a live round runs one
     policy per process, so a run must not see what an earlier run left in its process). The default beta is added to
-    the job's betas; at it the policy is built with no argument, as live. One timeout covers every run of the job, the
-    first failure ends it, and the processes run in sessions of their own, registered with the run's children, so an
-    interrupt or `drsi stop` kills every one."""
-    deadline = time.monotonic() + timeout
+    the job's betas; at it the policy is built with no argument, as live. Each run has the timeout (the work of a job
+    grows with its worlds, and one deadline for all of them would fail a policy only for the size of the pool), the
+    first failure ends the job, and the processes run in sessions of their own, registered with the run's children,
+    so an interrupt or `drsi stop` kills every one."""
     base = {"policy": job["policy"], "W": job["W"], "budget": job["budget"]}
-    running: set = set()
-    info = _spawn(base | {"world": None}, workdir, f"{seed}-describe", seed, deadline, running)
-    if not info.get("ok"):
-        return info
-    default = info["default_beta"]
-    betas = list(job["betas"]) + ([default] if default not in job["betas"] else [])
-    tasks = [(b, i) for b in betas for i in range(len(job["worlds"]))]
+    running = _Runs()
     results: dict = {}
-    pool = ThreadPoolExecutor(max_workers=max(1, min(4, len(tasks))))
+    pool = None
     try:
+        info = _spawn(base | {"world": None}, workdir, f"{seed}-describe", seed, timeout, running)
+        if not info.get("ok"):
+            return info
+        default = info["default_beta"]
+        betas = list(job["betas"]) + ([default] if default not in job["betas"] else [])
+        tasks = [(b, i) for b in betas for i in range(len(job["worlds"]))]
+        pool = ThreadPoolExecutor(max_workers=max(1, min(4, len(tasks))))
         futures = {pool.submit(_spawn, base | {"world": job["worlds"][i], "beta": None if b == default else b},
-                               workdir, f"{seed}-{b}-{i}", seed, deadline, running): (b, i) for b, i in tasks}
+                               workdir, f"{seed}-{b}-{i}", seed, timeout, running): (b, i) for b, i in tasks}
         for fut in as_completed(futures):
             r = fut.result()
             if not r.get("ok"):
                 return r
             results[futures[fut]] = r
     finally:  # a failure or an interrupt: nothing queued starts, and what runs is killed
-        pool.shutdown(wait=False, cancel_futures=True)
-        for proc in list(running):
-            _killpg(proc)
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+        running.halt()
     runs: dict = {}
     for b, i in tasks:
         runs.setdefault(str(float(b)), []).append({"trace": results[(b, i)]["trace"]})
     return {"ok": True, "default_beta": default, "runs": runs}
 
 
-def _spawn(job: dict, workdir: Path, tag: str, seed: int, deadline: float, running: set) -> dict:
-    left = deadline - time.monotonic()
-    if left <= 0:
-        return {"ok": False, "error": "timeout: the evaluation's time ran out"}
-    refuse_if_stopping()
+class _Runs:
+    """The processes of one evaluation. Once it halts (a failure or an interrupt) none starts, even in a pool thread
+    that was about to start one, and each one started is killed."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._procs: set = set()
+        self._halted = False
+
+    def start(self, argv: list[str], **kw):
+        with self._lock:
+            if self._halted:
+                return None
+            refuse_if_stopping()
+            proc = subprocess.Popen(argv, start_new_session=True, **kw)
+            self._procs.add(proc)
+        register_child(proc)
+        return proc
+
+    def done(self, proc) -> None:
+        with self._lock:
+            self._procs.discard(proc)
+        unregister_child(proc)
+
+    def halt(self) -> None:
+        with self._lock:
+            self._halted = True
+            procs = list(self._procs)
+        for proc in procs:
+            _killpg(proc)
+
+
+def _spawn(job: dict, workdir: Path, tag: str, seed: int, timeout: float, running: _Runs) -> dict:
     out = workdir / f"result-{tag}.json"
     job_path = workdir / f"job-{tag}.json"
     job_path.write_text(json.dumps(job | {"out": str(out)}))
     env = {"PYTHONHASHSEED": str(seed), "PATH": "/usr/bin:/bin"}
-    proc = subprocess.Popen([sys.executable, "-s", "-P", str(RUNNER), str(ENGINE_DIR), str(job_path)],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env,
-                            start_new_session=True)
-    register_child(proc)
-    running.add(proc)
+    proc = running.start([sys.executable, "-s", "-P", str(RUNNER), str(ENGINE_DIR), str(job_path)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env)
+    if proc is None:
+        return {"ok": False, "error": "the evaluation has stopped"}
     try:
         try:
-            _, err = proc.communicate(timeout=left)
+            _, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             _killpg(proc)
             proc.communicate()
-            return {"ok": False, "error": "timeout: the evaluation's time ran out"}
+            return {"ok": False, "error": f"timeout: a replay run took over {timeout:g} s"}
     finally:
-        running.discard(proc)
-        unregister_child(proc)
+        if proc.poll() is None:  # an interrupt, here or in the caller's thread: the run dies with the evaluation
+            _killpg(proc)
+        running.done(proc)
     if not out.exists():
         return {"ok": False, "error": f"runner wrote no result (exit {proc.returncode}): {(err or '')[-400:]}"}
     try:
@@ -98,19 +127,16 @@ def _spawn(job: dict, workdir: Path, tag: str, seed: int, deadline: float, runni
 
 
 def reachable(world: dict) -> list[dict]:
-    """Nodes replay can ever reveal: each root and its chain of first recorded children (a leaf reveals
-    its first child, after which its parent is no longer a leaf). Later siblings are unreachable, so they
-    must not set the target a policy is measured against or the work it is normalised by."""
-    kids: dict = {}
-    for n in world["nodes"]:
-        kids.setdefault(n.get("parent"), []).append(n)
+    """Nodes replay can ever reveal, by the rules it reveals by: each root through its slot, then the chain of
+    children each opened from its parent (a leaf reveals one child, after which it is no longer a leaf). Anything
+    else must not set the target a policy is measured against or the work it is normalised by."""
+    q = ReplayQuestion(world, 1)
     out = []
-    for root in kids.get(None, []):
-        cur = root
-        while cur is not None:
-            out.append(cur)
-            nxt = kids.get(cur["id"], [])
-            cur = nxt[0] if nxt else None
+    for j in sorted(q._slot):
+        node = q._rec[q._slot[j]]
+        while node is not None:
+            out.append(node)
+            node = q._recorded(str(node["id"]))
     return out
 
 
@@ -145,9 +171,9 @@ def _aggregate(raw: dict, worlds: list[dict], W: int, lam: float, beta1: float, 
     penalty="live" is the only penalty: live fill, cells requested per batch out of W (every probe is an attempt),
     with a run's unspent batches empty (reward.live_penalty). The earlier "support" and "realized" penalties paid
     for gains that do not exist live and were removed (round 25).
-    curve="canonical" (default) keeps one anytime point per revealed cell but credits the cells of a batch in a
-    fixed order (by node id): live they run in parallel, so the order a policy lists them in must not earn
-    reward. curve="reveal" is the old policy-ordered point per cell; "batch" is one point per batch (this
+    curve="canonical" (default) keeps one anytime point per revealed cell but credits the cells of a batch worst
+    first, best last: live they run in parallel, so the order a policy lists them in must not earn reward (nor the
+    ids, which live numbers in that order). curve="reveal" is the old policy-ordered point per cell; "batch" is one point per batch (this
     favours serial policies: a wide batch is credited only when all of it is spent); "clock" puts decision
     rounds / K1 on the work axis."""
     _ranking(score, penalty, curve)
@@ -240,6 +266,10 @@ def evaluate_policy(policy_path, worlds: list[dict], W: int, betas, budget, lam:
     return rep
 
 
+def _credit_key(o) -> float:
+    return o.score if o.valid and o.score is not None else float("-inf")
+
+
 def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
     """Recompute every metric in this (trusted) process by replaying the batches each run requested."""
     runs = {}
@@ -259,11 +289,12 @@ def _replay_traces(raw: dict, worlds: list[dict], W: int, budget) -> dict:
                         raise IllegalBatch("the trace goes on past the end of the record")
                 t += 1  # every batch is a live batch: each probe is an attempt
                 curve_clock.append([t, q.best_score()])
-                # a batch's attempts run in parallel live: credit them in a fixed order the policy cannot choose. In
-                # the batch that ends the record, the recorded cells come after the probes the record could not
-                # answer: live those are attempts too, and a lower bound may not assume they came later
+                # a batch's attempts run in parallel live: credit them worst first, best last, by score, which
+                # neither the policy's listing order nor the ids (numbered in that order live) decide. In the batch
+                # that ends the record, the recorded cells come after the probes the record could not answer: live
+                # those are attempts too, and each moves a recorded cell at most one place later in the order
                 lead = q._off - off
-                for k, nid in enumerate(sorted(q._order[seen:])):
+                for k, nid in enumerate(sorted(q._order[seen:], key=lambda i: _credit_key(q._obs[i]))):
                     o = q._obs[nid]
                     if o.valid and o.score is not None and (best is None or o.score > best):
                         best = o.score

@@ -49,22 +49,27 @@ def truth_world(i, roots=30, depth=30, plateau=False):
 
 
 def record(policy_path, truth, W, budget, world_id):
-    """What a live round of this policy records on the ground truth: the attempts it revealed, each with the cell that
-    opened it, listed in the order the workers finished (reversed within each batch)."""
-    from drsi.question import ReplayQuestion
+    """What a live round of this policy records on the ground truth: the attempts it revealed, under the ids live gives
+    them (<round>-<seq>, numbered in the order the policy listed each batch), each with the cell that opened it (its
+    root slot, or its parent's id), listed in the order the workers finished (reversed within each batch)."""
+    from drsi.question import ROOT, ReplayQuestion
     from drsi.replay import evaluate_policy
     rep = evaluate_policy(policy_path, [truth], W=W, betas=[], budget=budget, lam=0.25, beta1=0.01, beta2=0.01)
     assert rep["ok"], rep
     trace = rep["traces"]["runs"][str(float(rep["default_beta"]))][0]["trace"]
     q = ReplayQuestion(truth, W, max_probes=budget)
-    nodes = []
+    live, nodes = {}, []
     for batch in trace:
         seen = len(q._order)
         q.probe_batch(batch)
-        for cell, nid in reversed(list(zip(batch, q._order[seen:]))):
+        assert len(q._order) - seen == len(batch), "the ground truth must answer every probe"
+        done = []
+        for cell, nid in zip(batch, q._order[seen:]):
+            live[nid] = f"{world_id}-{len(live) + 1:03d}"
             o = q._obs[nid]
-            nodes.append({"id": nid, "parent": o.parent_id, "score": o.score, "valid": o.valid,
-                          "fail_class": o.fail_class, "cell": cell})
+            done.append({"id": live[nid], "parent": live.get(o.parent_id), "score": o.score, "valid": o.valid,
+                         "fail_class": o.fail_class, "cell": cell if cell.startswith(ROOT) else live[cell]})
+        nodes += reversed(done)
     return {"id": world_id, "baseline": 0.0, "nodes": nodes}
 
 

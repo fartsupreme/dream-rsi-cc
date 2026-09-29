@@ -23,7 +23,7 @@ import time
 import unittest
 from pathlib import Path
 
-from drsi.dream import SEED_POLICY, behaviour_differs, gate_worlds
+from drsi.dream import SEED_POLICY, gate_worlds
 from drsi.replay import ENGINE_DIR, _aggregate, evaluate_policy
 from tests.helpers import with_block
 from tests.test_policy import chain_world
@@ -36,12 +36,6 @@ HANG = """    # EVOLVE-BLOCK-START
             pass
     # EVOLVE-BLOCK-END
 """
-# all roots, unless a family no campaign uses appears
-GATE_PROBE = ALLROOTS.replace(
-    "        if roots:\n            return roots[:W]\n",
-    "        odd = any(o.family in (\"A\", \"B\", \"C\", \"D\", \"E\", \"F\") for o in question.observed().values())\n"
-    "        if roots and not odd:\n            return roots[:W]\n")
-assert GATE_PROBE != ALLROOTS
 
 
 def write(d, name, src) -> Path:
@@ -136,14 +130,7 @@ class BoundTest(unittest.TestCase):
 
 class GateTest(unittest.TestCase):
     def test_gate_trees_use_the_campaigns_family_names(self):
-        worlds = [dict(chain_world(3, 3), nodes=[dict(n, family=f) for n, f in
-                                                 zip(chain_world(3, 3)["nodes"], ["F01", "F02", None] * 3)])]
-        with tempfile.TemporaryDirectory() as d:
-            probe = write(d, "probe.py", with_block(GATE_PROBE)(SEED_POLICY.read_text()))
-            twin = write(d, "twin.py", with_block(ALLROOTS)(SEED_POLICY.read_text()))
-            g = behaviour_differs(probe, twin, W=2, budget=4, n=4, worlds=worlds)
-        self.assertTrue(g["ok"], g)
-        self.assertFalse(g["differs"], g)
+        # (round 30: policies see no family since round 29, so no policy can tell the gate's names apart)
         fams = {n["family"] for w in gate_worlds(4, 2, 4, families=["F01", "F02"]) for n in w["nodes"]}
         self.assertLessEqual(fams, {"F01", "F02", None})
 

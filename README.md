@@ -196,9 +196,11 @@ expect a campaign's first rounds to find its loopholes.
 
 ## Choices the paper leaves open (made here, all configurable)
 
-- **Replay:** a leaf reveals its first recorded child. Only leaves and root slots are actions
-  (A(T) = {r} ∪ leaves), so siblings under an interior node are unreachable in replay. A world's target and its work
-  normalisation are therefore computed over reachable attempts only. Replay shows a policy exactly what a live round
+- **Replay:** a root slot reveals the root opened in that slot live, and a leaf reveals the child opened from it
+  (in a world recorded before attempts kept their cells, the roots in order and each first child). Only leaves and
+  root slots are actions (A(T) = {r} ∪ leaves), so siblings under an interior node, and an attempt a prune moved
+  (re-rooted, or re-parented), are unreachable in replay. A world's target and its work normalisation are therefore
+  computed over reachable attempts only. Replay shows a policy exactly what a live round
   would, and root slots never run out. Replay can value only what was recorded, in breadth and in depth alike, so
   the first probe past the record (a root slot beyond the recorded roots, a leaf beyond the end of its recorded
   branch) ends that run: the batch's recorded cells count, the probes past the record cost budget and reveal
@@ -223,8 +225,8 @@ expect a campaign's first rounds to find its loopholes.
     every environment removes what they all used. The older penalties are gone: a campaign whose `dream.penalty`
     still says `"support"` or `"realized"` ranks by `"live"` and warns; an unknown `dream.score` or `dream.curve`
     ranks by the default and warns.
-  - The cells of one batch are credited in a fixed order: they run in parallel live, so listing order earns
-    nothing.
+  - The cells of one batch are credited worst first, best last, by score: they run in parallel live, so the order
+    a policy lists them in earns nothing (nor do the ids, which live numbers in that order).
   - Reaching good attempts sooner scores higher even when every run explores the whole world.
   - Worlds without a single valid reachable score can't favour any policy.
 - **Deploying a revision:** replay is exact only where the record answers. Policies are compared on the worlds
@@ -240,9 +242,10 @@ expect a campaign's first rounds to find its loopholes.
   the revision must change what the policy does on live-like trees without spending fewer probes there than the
   incumbent. A tie keeps the incumbent, and so does an incumbent that fails replay (nothing can be compared with
   it; no revision is asked for). No dream runs, in the loop or in `drsi dream`, until `dream.min_worlds`
-  (default 4) of those worlds can separate policies (any with a valid score: even roots alone do, by which slots a
-  policy opens first); the reason is
-  printed.
+  (default 4, at least 1) of those worlds can separate policies (any with a valid score replay can reveal: even
+  roots alone do, by which slots a policy opens first); the reason is printed. Worlds an earlier policy recorded count
+  only where the deployed policy's replay stays on their record, so after a deploy (or a change of W or K1) the
+  comparison is rebuilt from the rounds the deployed policy runs.
   The old ranking's score and curve stay available as `dream.score = "sweep"` and `dream.curve = "reveal"`
   (or `"batch"`, `"clock"`), but the guarantee above holds only for the defaults: those options can reward
   behaviour a live round never shows, and the dream warns when one is set. `drsi replay` ranks with the dream
