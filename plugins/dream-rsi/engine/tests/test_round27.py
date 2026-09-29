@@ -147,8 +147,8 @@ class EndOfRecordTest(unittest.TestCase):
                 replayed = evaluate_policy(pol, [recorded], **kw)["measured"]["runs"]
                 live = evaluate_policy(pol, [truth], **kw)["measured"]["runs"]
                 (key,) = replayed
-                r_curve = dict(replayed[key][0]["curve"])
-                l_curve = dict(live[key][0]["curve"])
+                r_curve = dict(replayed[key][0]["curve_canonical"])  # the curve the reward uses
+                l_curve = dict(live[key][0]["curve_canonical"])
                 for p, best in r_curve.items():
                     self.assertLessEqual(best if best is not None else float("-inf"),
                                          l_curve.get(p, float("-inf")) if l_curve.get(p) is not None

@@ -17,9 +17,11 @@ import json
 import subprocess
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from .agent import _killpg, refuse_if_stopping, register_child, unregister_child
 from .guard import check_policy_source
 from .question import POLICY_HASH_SEED, IllegalBatch, RecordEnd, ReplayQuestion
 from .reward import attainment, eq1_value, live_penalty, mean_curve_auc
@@ -31,42 +33,64 @@ RUNNER = Path(__file__).resolve().parent / "replay_runner.py"
 def _run_once(job: dict, workdir: Path, seed: int, timeout: int) -> dict:
     """The policy's trace on every (beta, world) of the job, each run in a process of its own (a live round runs one
     policy per process, so a run must not see what an earlier run left in its process). The default beta is added to
-    the job's betas; at it the policy is built with no argument, as live."""
+    the job's betas; at it the policy is built with no argument, as live. One timeout covers every run of the job, the
+    first failure ends it, and the processes run in sessions of their own, registered with the run's children, so an
+    interrupt or `drsi stop` kills every one."""
+    deadline = time.monotonic() + timeout
     base = {"policy": job["policy"], "W": job["W"], "budget": job["budget"]}
-    info = _spawn(base | {"world": None}, workdir, f"{seed}-describe", seed, timeout)
+    running: set = set()
+    info = _spawn(base | {"world": None}, workdir, f"{seed}-describe", seed, deadline, running)
     if not info.get("ok"):
         return info
     default = info["default_beta"]
     betas = list(job["betas"]) + ([default] if default not in job["betas"] else [])
     tasks = [(b, i) for b in betas for i in range(len(job["worlds"]))]
-
-    def one(task):
-        b, i = task
-        return _spawn(base | {"world": job["worlds"][i], "beta": None if b == default else b}, workdir,
-                      f"{seed}-{b}-{i}", seed, timeout)
-    with ThreadPoolExecutor(max_workers=max(1, min(4, len(tasks)))) as pool:
-        results = list(pool.map(one, tasks))
-    failed = next((r for r in results if not r.get("ok")), None)
-    if failed:
-        return failed
+    results: dict = {}
+    pool = ThreadPoolExecutor(max_workers=max(1, min(4, len(tasks))))
+    try:
+        futures = {pool.submit(_spawn, base | {"world": job["worlds"][i], "beta": None if b == default else b},
+                               workdir, f"{seed}-{b}-{i}", seed, deadline, running): (b, i) for b, i in tasks}
+        for fut in as_completed(futures):
+            r = fut.result()
+            if not r.get("ok"):
+                return r
+            results[futures[fut]] = r
+    finally:  # a failure or an interrupt: nothing queued starts, and what runs is killed
+        pool.shutdown(wait=False, cancel_futures=True)
+        for proc in list(running):
+            _killpg(proc)
     runs: dict = {}
-    for (b, _), r in zip(tasks, results):
-        runs.setdefault(str(float(b)), []).append({"trace": r["trace"]})
+    for b, i in tasks:
+        runs.setdefault(str(float(b)), []).append({"trace": results[(b, i)]["trace"]})
     return {"ok": True, "default_beta": default, "runs": runs}
 
 
-def _spawn(job: dict, workdir: Path, tag: str, seed: int, timeout: int) -> dict:
+def _spawn(job: dict, workdir: Path, tag: str, seed: int, deadline: float, running: set) -> dict:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return {"ok": False, "error": "timeout: the evaluation's time ran out"}
+    refuse_if_stopping()
     out = workdir / f"result-{tag}.json"
     job_path = workdir / f"job-{tag}.json"
     job_path.write_text(json.dumps(job | {"out": str(out)}))
     env = {"PYTHONHASHSEED": str(seed), "PATH": "/usr/bin:/bin"}
+    proc = subprocess.Popen([sys.executable, "-s", "-P", str(RUNNER), str(ENGINE_DIR), str(job_path)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, env=env,
+                            start_new_session=True)
+    register_child(proc)
+    running.add(proc)
     try:
-        proc = subprocess.run([sys.executable, "-s", "-P", str(RUNNER), str(ENGINE_DIR), str(job_path)],
-                              capture_output=True, text=True, timeout=timeout, env=env)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"timeout after {timeout}s"}
+        try:
+            _, err = proc.communicate(timeout=left)
+        except subprocess.TimeoutExpired:
+            _killpg(proc)
+            proc.communicate()
+            return {"ok": False, "error": "timeout: the evaluation's time ran out"}
+    finally:
+        running.discard(proc)
+        unregister_child(proc)
     if not out.exists():
-        return {"ok": False, "error": f"runner wrote no result (exit {proc.returncode}): {proc.stderr[-400:]}"}
+        return {"ok": False, "error": f"runner wrote no result (exit {proc.returncode}): {(err or '')[-400:]}"}
     try:
         return json.loads(out.read_text())
     except json.JSONDecodeError:
