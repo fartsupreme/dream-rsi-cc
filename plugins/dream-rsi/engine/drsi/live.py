@@ -169,6 +169,7 @@ class LiveRunner:
         self._models: dict[str, str | None] = {}
         self._batches = 0  # model slots rotate by one each batch, so no model always gets the last-ranked cell
         self.ids: list[str] = []
+        self.shown_family: dict[str, str | None] = {}  # the family each attempt was shown with at its reveal
         self._seq = 0
         self._git_lock = threading.Lock()
         self.proposals = camp.root / "work" / "_proposals"
@@ -470,8 +471,10 @@ class LiveRunner:
         except Exception as e:  # noqa: BLE001 - the map can be rebuilt later; the attempts are safe
             self.log(f"indexing failed ({e}); run `drsi sync` later")
         tree = self.camp.tree
-        return [{"id": n["id"], "score": n["score"], "valid": n["valid"], "fail_class": n["fail_class"],
-                 "family": ((tree.get(n["id"]).get("fingerprint") or {}).get("family"))} for n in nodes]
+        out = [{"id": n["id"], "score": n["score"], "valid": n["valid"], "fail_class": n["fail_class"],
+                "family": ((tree.get(n["id"]).get("fingerprint") or {}).get("family"))} for n in nodes]
+        self.shown_family.update({n["id"]: n["family"] for n in out})
+        return out
 
 
 RUNNER = Path(__file__).resolve().parent / "live_runner.py"
@@ -569,7 +572,8 @@ def live_round(camp: Campaign, policy: PolicySource, runner: LiveRunner) -> dict
     why = _drive(policy, q, budget, cfg["live"].get("think_timeout_s") or None, runner.log)
     if why != "done":  # the budget, batch and time rules hold whatever the policy does
         runner.log(f"{runner.round_id}: policy stopped: {why}")
-    world = world_from_tree(camp.tree, runner.round_id, baseline, ids=set(runner.ids))
+    # the world keeps what the policy was shown, not the families assigned since (replay must see what live saw)
+    world = world_from_tree(camp.tree, runner.round_id, baseline, ids=set(runner.ids), shown=runner.shown_family)
     freeze_world(camp.root / "trace_pool", world)
     write_map(camp)
     valid = [camp.tree.get(i) for i in runner.ids]

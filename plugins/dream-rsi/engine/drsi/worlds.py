@@ -30,7 +30,10 @@ def outcome_score(node: dict) -> float | None:
     return RANK[outcome] / max(RANK.values())
 
 
-def world_from_tree(tree: Tree, world_id: str, baseline: float = 0.0, ids: set[str] | None = None) -> dict:
+def world_from_tree(tree: Tree, world_id: str, baseline: float = 0.0, ids: set[str] | None = None,
+                    shown: dict | None = None) -> dict:
+    """shown: attempt id -> the family a live policy was shown at its reveal, which the world keeps (the tree's
+    families can be assigned again later in the round)."""
     nodes = []
     for n in tree.nodes():
         if ids is not None and n["id"] not in ids:
@@ -41,7 +44,8 @@ def world_from_tree(tree: Tree, world_id: str, baseline: float = 0.0, ids: set[s
         valid = bool(n.get("valid", True)) if n.get("valid") is not None else score is not None
         parent = n["parent"] if (ids is None or n["parent"] in ids) else None
         nodes.append({"id": n["id"], "parent": parent, "score": score if valid else None, "valid": valid,
-                      "fail_class": n.get("fail_class"), "family": (n.get("fingerprint") or {}).get("family"),
+                      "fail_class": n.get("fail_class"),
+                      "family": shown[n["id"]] if shown and n["id"] in shown else (n.get("fingerprint") or {}).get("family"),
                       "model": (n.get("worker") or {}).get("model"), "cell": (n.get("ext") or {}).get("cell")})
     return {"id": world_id, "baseline": baseline, "nodes": nodes}
 

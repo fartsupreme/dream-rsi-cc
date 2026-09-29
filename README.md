@@ -244,8 +244,9 @@ expect a campaign's first rounds to find its loopholes.
   printed.
   The old ranking's score and curve stay available as `dream.score = "sweep"` and `dream.curve = "reveal"`
   (or `"batch"`, `"clock"`), but the guarantee above holds only for the defaults: those options can reward
-  behaviour a live round never shows, and the dream warns when one is set. `drsi replay` ranks exactly as the dream
-  step does.
+  behaviour a live round never shows, and the dream warns when one is set. `drsi replay` ranks with the dream
+  step's formula over every world and says in how many the deployed policy stays on the record (the dream compares
+  on those alone).
 - **Parallel attempts:** the orchestrator's checks within a round are two-phase claims. Each claim is
   recorded under a lock and then judged without the lock, so checks run concurrently, but each one sees every
   claim before it. Claims from an interrupted earlier round are not treated as in flight.

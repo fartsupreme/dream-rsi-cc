@@ -103,12 +103,14 @@ def config_warnings(cfg: dict) -> list[str]:
     return out
 
 
-def gate_worlds(n: int, W: int, budget: int, baseline: float = 0.0, lo: float = 0.0, hi: float = 1.0) -> list[dict]:
+def gate_worlds(n: int, W: int, budget: int, baseline: float = 0.0, lo: float = 0.0, hi: float = 1.0,
+                families: list[str] | None = None) -> list[dict]:
     """Synthetic live-like trees for the behaviour gate: more roots than a round can open and branches deeper
     than a round can go, so (as live) the record always answers. Scores are seeded: half the trees are random
     walks, half independent draws, with a failure rate that varies per tree, placed in [lo, hi] over the campaign's
-    baseline so they read like the campaign's own."""
+    baseline, with the campaign's family names, so they read like the campaign's own."""
     import random
+    names = list(families) if families else [None]
     out = []
     for k in range(n):
         rng = random.Random(f"drsi-gate|{k}")
@@ -122,7 +124,7 @@ def gate_worlds(n: int, W: int, budget: int, baseline: float = 0.0, lo: float = 
                 nid = f"g{k}r{r}d{dd}"
                 nodes.append({"id": nid, "parent": prev, "score": lo + (hi - lo) * s if valid else None, "valid": valid,
                               "fail_class": "ok" if valid or rng.random() < 0.5 else "agent_error",
-                              "family": "ABCDEF"[rng.randrange(6)]})
+                              "family": rng.choice(names)})
                 prev = nid
         out.append({"id": f"gate{k}", "baseline": baseline, "nodes": nodes})
     return out
@@ -136,7 +138,9 @@ def behaviour_differs(cand_path, inc_path, W: int, budget: int, n: int = 32, tim
     of a live round than the incumbent cannot be justified by replay (see deploy_checks)."""
     if n < 1:
         return {"ok": False, "error": "dream.gate_worlds must be at least 1 while dream.behaviour_gate is on"}
-    worlds = gate_worlds(n, W, budget, *_campaign_scale(worlds or []))
+    base, lo, hi = _campaign_scale(worlds or [])
+    names = sorted({x["family"] for w in (worlds or []) for x in w["nodes"] if x.get("family")}) or None
+    worlds = gate_worlds(n, W, budget, base, lo, hi, families=names)
     traces, probes = {}, {}
     with tempfile.TemporaryDirectory(prefix="drsi-gate-") as tmp:
         for label, path in (("cand", cand_path), ("inc", inc_path)):

@@ -128,13 +128,14 @@ class PenaltyTest(unittest.TestCase):
         cfg = {"search": {"W": 4, "K1": 6}, "dream": dict(DEFAULT_CONFIG["dream"]) | {"score": "sweep",
                                                                                        "curve": "batch"}}
         camp = mock.Mock(config=cfg)
-        rep = {"ok": True, "reward": 0.5, "auc": 0.6, "parallel_penalty": 0.4, "per_beta": {}}
+        rep = {"ok": True, "reward": 0.5, "auc": 0.6, "parallel_penalty": 0.4, "per_beta": {}, "default_beta": 0.6,
+               "measured": {"runs": {"0.6": [{"off_record": 0}]}}}
         with mock.patch.object(cli, "resolve_campaign", return_value=camp), \
                 mock.patch.object(cli, "_worlds", return_value=[chain_world()]), \
                 mock.patch.object(cli, "_policy_path", return_value=SEED_POLICY), \
                 mock.patch.object(cli, "evaluate_policy", return_value=rep) as ev, redirect_stdout(io.StringIO()):
             cli.cmd_replay(Namespace(campaign="x", history=False, policy=None))
-        self.assertEqual(ev.call_args.kwargs, _params(cfg))
+        self.assertEqual([c.kwargs for c in ev.call_args_list], [_params(cfg)] * ev.call_count)
 
 
 class LabelTest(unittest.TestCase):
