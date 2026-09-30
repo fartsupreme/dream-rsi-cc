@@ -98,7 +98,7 @@ def as_recorded(world: dict) -> bool:
     from which leaf; a prune re-parents an attempt but keeps its cell (which names the removed attempt), so replay
     cannot reach it and the world's best drops to what is left."""
     from .question import slot_of
-    slots = set()
+    slots, ids = set(), {str(n["id"]) for n in world["nodes"]}
     for n in world["nodes"]:
         cell, parent = n.get("cell"), n.get("parent")
         if parent is None:
@@ -106,8 +106,8 @@ def as_recorded(world: dict) -> bool:
             if j is None or j in slots:
                 return False
             slots.add(j)
-        elif cell is None or str(cell) != str(parent):
-            return False
+        elif str(parent) not in ids or not isinstance(cell, str) or cell != str(parent):
+            return False  # opened from an attempt this world holds, named as live names it
     return True
 
 
