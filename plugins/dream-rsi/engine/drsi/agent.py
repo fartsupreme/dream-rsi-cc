@@ -86,6 +86,34 @@ def kill_all_children() -> None:
         _killpg(proc)
 
 
+class _RusageInfoV0:  # filled in on first use (macOS only)
+    struct = None
+
+
+def _footprint(pid: int) -> int | None:
+    """A process's physical footprint in bytes on macOS (what Activity Monitor calls its memory: resident plus
+    compressed and swapped-out pages it owns), or None where it cannot be read. The resident size leaves out
+    compressed and swapped pages, so it reads low exactly when memory is short."""
+    import sys
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+    import ctypes.util
+    if _RusageInfoV0.struct is None:
+        class Info(ctypes.Structure):
+            _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (
+                "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size",
+                "resident_size", "phys_footprint", "proc_start_abstime", "proc_exit_abstime")]
+        lib = ctypes.CDLL(ctypes.util.find_library("proc") or "libproc.dylib", use_errno=True)
+        lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+        lib.proc_pid_rusage.restype = ctypes.c_int
+        _RusageInfoV0.struct, _RusageInfoV0.call = Info, lib.proc_pid_rusage
+    info = _RusageInfoV0.struct()
+    if _RusageInfoV0.call(pid, 0, ctypes.byref(info)) != 0:  # RUSAGE_INFO_V0
+        return None
+    return int(info.phys_footprint)
+
+
 class Descendants:
     """Tracks every process descended from a child (worker or scorer) while it runs, by polling the process
     table, so children that left its process group (start_new_session, setsid) are still killed when it
@@ -95,15 +123,26 @@ class Descendants:
     def __init__(self, root_pid: int, interval: float = 0.25, mem_cap_bytes: int | None = None):
         self.root = root_pid
         self.pids = {root_pid}
-        self.mem_cap = mem_cap_bytes  # the descendants' (never the root's) resident total; the largest go while over
+        self.mem_cap = mem_cap_bytes  # the descendants' (never the root's) total; the largest go while over it
         self.mem_kills: list[dict] = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, args=(interval,), daemon=True)
         self._thread.start()
 
     @staticmethod
+    def _table() -> dict[int, int]:
+        out = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid="], capture_output=True, text=True,
+                             timeout=PS_TIMEOUT).stdout
+        table = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                table[int(parts[0])] = int(parts[1])
+        return table
+
+    @staticmethod
     def _rows() -> dict[int, tuple[int, int, str]]:
-        """{pid: (ppid, resident KB, command name)} for every process."""
+        """{pid: (ppid, resident KB, command name)} for every process (read only when there is a cap)."""
         out = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "rss=", "-o", "comm="],
                              capture_output=True, text=True, timeout=PS_TIMEOUT).stdout
         rows = {}
@@ -113,18 +152,23 @@ class Descendants:
                 rows[int(parts[0])] = (int(parts[1]), int(parts[2]), parts[3] if len(parts) == 4 else "")
         return rows
 
-    def poll(self) -> None:
-        rows = self._rows()
-        table = {pid: r[0] for pid, r in rows.items()}
+    def poll(self, enforce: bool = True) -> None:
+        """Follow the tree; with a cap (and `enforce`: not in the poll that ends the call, where everything is
+        killed anyway), kill the largest descendants while together they hold more than the cap."""
+        rows = self._rows() if self.mem_cap else None
+        table = {pid: r[0] for pid, r in rows.items()} if rows is not None else self._table()
         grew = True
         while grew:
             new = {pid for pid, ppid in table.items() if ppid in self.pids and pid not in self.pids}
             self.pids |= new
             grew = bool(new)
         self.pids = {pid for pid in self.pids if pid in table}  # gone: forget, so a reused pid is never hit
-        if self.mem_cap:
+        if self.mem_cap and enforce:
             # the cap is on the processes together: a pool of processes each under it can fill the machine as well
-            held = {pid: rows[pid][1] * 1024 for pid in self.pids - {self.root}}
+            held = {}
+            for pid in self.pids - {self.root}:
+                size = _footprint(pid)
+                held[pid] = size if size is not None else rows[pid][1] * 1024
             total = sum(held.values())
             for pid in sorted(held, key=held.get, reverse=True):
                 if total <= self.mem_cap:
@@ -149,7 +193,7 @@ class Descendants:
         self._stop.set()
         self._thread.join()
         try:
-            self.poll()
+            self.poll(enforce=False)  # everything is killed below: nothing here is a kill for the cap
         except Exception:  # noqa: BLE001
             pass
         for pid in self.pids | (_working_in(dirs) or set()):
