@@ -107,11 +107,12 @@ expect a campaign's first rounds to find its loopholes.
   request file into its own proposal directory; the orchestrator, outside the sandbox, checks it (an argument list,
   a directory inside the checkout, limits within the configured maximum) and runs the one configured command with
   it, never a shell. The directory is the worker's to write and the orchestrator is outside the sandbox, so it
-  reaches every file there through a handle on a directory it made itself for the call (a link left in its place is
-  removed, not followed, and requests an earlier call left are not run), reads a request only from a plain file with
-  one link, creates the output file anew, puts the status file in place by a rename, and never repeats a request's
-  values back. A request runs only while the helper that made it holds its lock, and a directory flooded with
-  entries is no longer served. The checkout and the directory the command is given are the worker's to write, so
+  reaches every file there through a handle on a directory it made itself for the call (whatever stood in its place,
+  a link included, is moved aside, never followed, then removed within bounds, so requests an earlier call left are
+  not run), reads a request only from a plain file with one link, creates the output file anew, puts the status file
+  in place by a rename, and never repeats a request's values back. A request runs only while a process holds the
+  lock on its `<id>.lock` (a plain file with one link; the helper holds it for its life), a run whose output passes
+  64 MB is stopped, and a directory flooded with entries is no longer served. The checkout and the directory the command is given are the worker's to write, so
   the configured command must treat them as such (follow no links there, pass them to no shell unquoted); what it
   runs, and where, is the campaign's to contain.
 - **Novelty checks are the orchestrator's, not the worker's.** Each live attempt goes: propose; the
@@ -328,13 +329,17 @@ expect a campaign's first rounds to find its loopholes.
   relative to the checkout) while the worker's call lasts, and the helper streams its output and exits with its
   status. `PATH` is the campaign's, an absolute path outside the workers' checkouts (it runs with the checkout as its
   directory): ship the checkout to a compute host and run the command there in a sandbox with those limits, say. The helper names the file its output also goes to, so a worker can start a long run in the
-  background and read it there. A run is stopped when its helper ends or the worker's call does: the command's
-  process group and every process it started are killed, and a command that starts work on another machine must stop
-  that work when it is killed. What a run writes stays where it ran. Bad settings stop `drsi run` when a round starts.
+  background and read it there. A run is stopped when its helper ends or the worker's call does, and when it ends on
+  its own its process group goes with it: the group and the processes the tracker saw it start are killed (one that
+  detaches before the tracker's first look, every 0.5 s, and leaves the checkout escapes, as for workers), and a
+  command that starts work on another machine must stop that work when it is killed. What a run writes stays where it
+  ran. A maximum set alone lowers its default to it; bad settings (a cmd that is not an executable file, say) stop
+  `drsi run` and `drsi baseline` before they start anything.
 - **Workers' memory:** `live.worker_mem_gb` caps what a worker's processes on the loop's machine hold together:
   while their total is over it, the largest is killed (never the worker's Claude Code process itself). On macOS a
-  process counts its physical footprint (resident, compressed and swapped-out pages; the resident size alone reads
-  low exactly when memory is short), elsewhere its resident size. The worker is told the cap, and the attempt records
+  process counts its physical footprint (the memory it owns, resident, compressed or swapped out; the resident size
+  alone reads low exactly when memory is short, though it also counts clean pages of mapped files, which the
+  footprint does not), elsewhere its resident size. The worker is told the cap, and the attempt records
   each kill, from any of its calls, in `worker.mem_kills`. A process that detaches before the tracker's first look
   (every 0.5 s) escapes the cap; the cleanup at the end of the call still finds it while it works in the checkout. It is a guard, not a place for
   heavy work: with `live.offload` set, a worker has somewhere to run what the cap stops.

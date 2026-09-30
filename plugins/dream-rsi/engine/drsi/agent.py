@@ -88,26 +88,34 @@ def kill_all_children() -> None:
 
 class _RusageInfoV0:  # filled in on first use (macOS only)
     struct = None
+    call = None
+    failed = False
 
 
 def _footprint(pid: int) -> int | None:
-    """A process's physical footprint in bytes on macOS (what Activity Monitor calls its memory: resident plus
-    compressed and swapped-out pages it owns), or None where it cannot be read. The resident size leaves out
-    compressed and swapped pages, so it reads low exactly when memory is short."""
+    """A process's physical footprint in bytes on macOS (what Activity Monitor calls its memory: the memory it owns,
+    resident, compressed or swapped out; not clean pages of files it maps), or None where it cannot be read. The
+    resident size leaves out compressed and swapped pages, so it reads low exactly when memory is short."""
     import sys
-    if sys.platform != "darwin":
+    if sys.platform != "darwin" or _RusageInfoV0.failed:
         return None
-    import ctypes
-    import ctypes.util
-    if _RusageInfoV0.struct is None:
-        class Info(ctypes.Structure):
-            _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (
-                "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size",
-                "resident_size", "phys_footprint", "proc_start_abstime", "proc_exit_abstime")]
-        lib = ctypes.CDLL(ctypes.util.find_library("proc") or "libproc.dylib", use_errno=True)
-        lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
-        lib.proc_pid_rusage.restype = ctypes.c_int
-        _RusageInfoV0.struct, _RusageInfoV0.call = Info, lib.proc_pid_rusage
+    try:
+        import ctypes
+        if _RusageInfoV0.struct is None:
+            import ctypes.util
+
+            class Info(ctypes.Structure):  # rusage_info_v0, <sys/resource.h>
+                _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (
+                    "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size",
+                    "resident_size", "phys_footprint", "proc_start_abstime", "proc_exit_abstime")]
+            fn = ctypes.CDLL(ctypes.util.find_library("proc") or "libproc.dylib", use_errno=True).proc_pid_rusage
+            fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+            fn.restype = ctypes.c_int
+            _RusageInfoV0.call = fn
+            _RusageInfoV0.struct = Info  # set last: a concurrent first reader sees all of it or none
+    except (ImportError, OSError, AttributeError):  # no library: the resident size stands in, the cap still holds
+        _RusageInfoV0.failed = True
+        return None
     info = _RusageInfoV0.struct()
     if _RusageInfoV0.call(pid, 0, ctypes.byref(info)) != 0:  # RUSAGE_INFO_V0
         return None
@@ -232,6 +240,8 @@ def _working_in(dirs: list[Path]) -> set[int] | None:
     temp dir): leftovers that detached too fast to be tracked but never left where they were started. A process with
     a controlling terminal is the user's own (a shell or an editor opened there) and is never included. None when the
     process table cannot be read in time: a failed look is not an empty one."""
+    if not dirs:
+        return set()  # nothing to look in: no process listing needed
     roots = [str(Path(d).resolve()) for d in dirs]
 
     def inside(p: str) -> bool:

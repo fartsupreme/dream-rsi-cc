@@ -388,6 +388,10 @@ def _live_ready(camp: Campaign) -> str | None:
         return "workspace.repo is not set (the repository the campaign clones)"
     if not cfg["workspace"].get("mutable"):
         return "workspace.mutable is empty: list the paths workers may edit (e.g. --set workspace.mutable='[\"src/**\"]')"
+    try:
+        offload.check(cfg, camp.root)
+    except ValueError as e:
+        return str(e)
     return None
 
 

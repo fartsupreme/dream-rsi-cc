@@ -215,9 +215,10 @@ class RunTest(Base):
 
 class SettingsTest(unittest.TestCase):
     def test_bad_settings_are_refused(self):
-        for live in ({"offload": {"cmd": "/x", "mem_gb": 20, "max_mem_gb": 16}},
-                     {"offload": {"cmd": "/x", "secs": 0}},
-                     {"offload": {"cmd": "/x", "max_secs": "long"}},
+        exe = sys.executable  # round 41: cmd must be an executable file, so each case fails for its own reason
+        for live in ({"offload": {"cmd": exe, "mem_gb": 20, "max_mem_gb": 16}},
+                     {"offload": {"cmd": exe, "secs": 0}},
+                     {"offload": {"cmd": exe, "max_secs": "long"}},
                      {"offload": {"cmd": 7}},
                      {"offload": {"cmd": "scripts/run.sh"}},
                      {"worker_mem_gb": "three"},
@@ -225,7 +226,7 @@ class SettingsTest(unittest.TestCase):
                      {"worker_mem_gb": True}):
             with self.assertRaises(ValueError, msg=live):
                 offload.check({"live": live})
-        offload.check({"live": {"offload": {"cmd": "/x", "mem_gb": 8, "max_mem_gb": 24}, "worker_mem_gb": 3}})
+        offload.check({"live": {"offload": {"cmd": exe, "mem_gb": 8, "max_mem_gb": 24}, "worker_mem_gb": 3}})
         offload.check({"live": {"worker_mem_gb": 2.5}})
         offload.check({"live": {}})
 
