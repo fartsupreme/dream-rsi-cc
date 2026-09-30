@@ -240,7 +240,11 @@ def run_group(args, input=None, capture_output=True, text=True, timeout=None, cw
     appended to that file the same way (and still returned), so it outlives a kill too."""
     refuse_if_stopping()
     out_file = open(stdout_path, "ab") if stdout_path is not None else tempfile.TemporaryFile()
-    err_file = open(stderr_path, "a+b") if stderr_path is not None else tempfile.TemporaryFile()
+    try:
+        err_file = open(stderr_path, "a+b") if stderr_path is not None else tempfile.TemporaryFile()
+    except BaseException:
+        out_file.close()
+        raise
     with tempfile.TemporaryFile() as fin, out_file as fout, err_file as ferr:
         fin.write((input or "").encode())
         fin.seek(0)
@@ -375,30 +379,43 @@ def _json(line: str) -> dict | None:
     return e if isinstance(e, dict) else None
 
 
+def _failed(result: dict) -> bool:
+    return bool(result.get("is_error")) or result.get("subtype") != "success"
+
+
 def _stream_result(path) -> tuple[dict | None, str]:
-    """The session's result: its final result event, as Claude Code's own JSON output reports it. A session can hold
-    more than one (a background task that ends in time gets a second turn) and system events after the last (a
-    background task still running when the session ends). It fails if an earlier result was an error (a success
-    after an error is not what Claude Code writes), or if anything but whole system events follows the final one;
-    a failure gives (None, why)."""
-    found, earlier_error, after = None, False, None
+    """The session's result. A session can hold more than one: when a background task ends, Claude Code starts a turn
+    of its own, whose result carries an origin ({"kind": "task-notification"}); one still running when the session
+    ends leaves system events after the last result. The worker's own last result is the call's, and an automatic
+    turn's replaces it only if it succeeded with a report of its own: an automatic turn that failed or reported
+    nothing does not undo a finished attempt. The call fails if an earlier result of the worker's own turns was an
+    error, or if anything but whole system events follows the last result; a failure gives (None, why)."""
+    own, auto, last, earlier_error, after = None, None, None, False, None
     for line in _lines(path):
         if not line.strip():
             continue
         ev = _json(line)
         if ev is not None and ev.get("type") == "result":
-            if found is not None and (found.get("is_error") or found.get("subtype") != "success"):
-                earlier_error = True
-            found, after = ev, None
-        elif found is not None and (ev is None or ev.get("type") != "system"):
+            if ev.get("origin"):
+                auto = ev
+            else:
+                if own is not None and _failed(own):
+                    earlier_error = True
+                own, auto = ev, None
+            last, after = ev, None
+        elif last is not None and (ev is None or ev.get("type") != "system"):
             after = "a torn line" if ev is None else f"a {ev.get('type')} event"
-    if found is None:
+    if last is None:
         return None, "no result in the stream"
     if earlier_error:
-        return None, "an earlier result in the session was an error"
+        return None, "an earlier result of the session was an error"
     if after:
         return None, f"the stream goes on after its final result ({after})"
-    return found, ""
+    if own is None:
+        return last, ""
+    if not _failed(own) and auto is not None and not _failed(auto) and auto.get("structured_output") is not None:
+        return auto, ""
+    return own, ""
 
 
 def _stderr_tail(epath) -> str:

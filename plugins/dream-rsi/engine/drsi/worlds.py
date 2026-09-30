@@ -108,6 +108,14 @@ def as_recorded(world: dict) -> bool:
             slots.add(j)
         elif str(parent) not in ids or not isinstance(cell, str) or cell != str(parent):
             return False  # opened from an attempt this world holds, named as live names it
+    up = {str(n["id"]): (None if n.get("parent") is None else str(n["parent"])) for n in world["nodes"]}
+    for start in up:  # every attempt reaches a root through its parents (no attempt is its own ancestor)
+        seen, cur = set(), start
+        while cur is not None:
+            if cur in seen:
+                return False
+            seen.add(cur)
+            cur = up.get(cur)
     return True
 
 
