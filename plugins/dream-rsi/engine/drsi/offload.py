@@ -111,25 +111,41 @@ def _whole(v, what: str) -> int:
     return v
 
 
-def check(cfg: dict) -> None:
-    """Refuse bad live.offload and live.worker_mem_gb settings (a run checks them when it starts)."""
+def check(cfg: dict, root=None) -> None:
+    """Refuse bad live.offload and live.worker_mem_gb settings; `drsi run` and `drsi baseline` check them before they
+    start anything. `root` is the campaign's directory, when known. Unset, empty, false and 0 are off."""
     live = cfg.get("live") or {}
     cap = live.get("worker_mem_gb")
-    if cap is not None and (isinstance(cap, bool) or not isinstance(cap, (int, float)) or not cap > 0):
-        raise ValueError("live.worker_mem_gb must be a positive number of GB")
+    if cap not in (None, 0) and (isinstance(cap, bool) or not isinstance(cap, (int, float)) or not cap > 0):
+        raise ValueError("live.worker_mem_gb must be a positive number of GB (or 0 for no cap)")
     off = live.get("offload")
-    if off is None:
+    if not off:
         return
     if not isinstance(off, dict) or not isinstance(off.get("cmd"), str) or not off["cmd"]:
         raise ValueError("live.offload needs cmd, the path of the command that runs a request")
-    if not os.path.isabs(off["cmd"]):  # it runs with a checkout as its directory: a relative path is the worker's
+    cmd = off["cmd"]
+    if not os.path.isabs(cmd):  # it runs with a checkout as its directory: a relative path is the worker's
         raise ValueError("live.offload.cmd must be an absolute path")
+    if not (os.path.isfile(cmd) and os.access(cmd, os.X_OK)):
+        raise ValueError(f"live.offload.cmd is not an executable file: {cmd} (it takes no arguments of its own)")
+    if root is not None and os.path.realpath(cmd).startswith(os.path.realpath(os.path.join(root, "work")) + os.sep):
+        raise ValueError("live.offload.cmd is inside the workers' checkouts")
     for k in ("mem_gb", "secs", "max_mem_gb", "max_secs"):
         if k in off:
             _whole(off[k], f"live.offload.{k}")
-    mem, secs = off.get("mem_gb", 8), off.get("secs", 1800)
-    if off.get("max_mem_gb", mem) < mem or off.get("max_secs", secs) < secs:
-        raise ValueError("live.offload: a default (mem_gb, secs) is over its maximum (max_mem_gb, max_secs)")
+    for d, m in (("mem_gb", "max_mem_gb"), ("secs", "max_secs")):
+        if d in off and m in off and off[d] > off[m]:
+            raise ValueError(f"live.offload.{d} is over live.offload.{m}")
+
+
+def _limits(off: dict) -> dict:
+    """{key: (default, maximum)} for mem_gb and secs: a maximum set alone lowers the built-in default to it."""
+    out = {}
+    for key, builtin in (("mem_gb", 8), ("secs", 1800)):
+        top = off.get(f"max_{key}")
+        default = off.get(key, builtin if top is None else min(builtin, top))
+        out[key] = (int(default), int(top if top is not None else default))
+    return out
 
 
 def request_dir(camp, nid: str):
@@ -149,12 +165,12 @@ def brief(camp) -> list[str]:
     off = config(camp)
     if off is None:
         return []
-    mem, secs = int(off.get("mem_gb", 8)), int(off.get("secs", 1800))
+    lim = _limits(off)
+    (mem, max_mem), (secs, max_secs) = lim["mem_gb"], lim["secs"]
     lines = ["HEAVY COMPUTATION",
              "Run anything more than a quick check on the campaign's compute host, not on this machine: from your "
              f"checkout, `{sys.executable} {os.path.abspath(__file__)} [--mem GB] [--secs S] -- <command> [args]` "
-             f"(defaults {mem} GB and {secs} s, at most {int(off.get('max_mem_gb', mem))} GB and "
-             f"{int(off.get('max_secs', secs))} s). It ships your checkout there, runs the command in the same "
+             f"(defaults {mem} GB and {secs} s, at most {max_mem} GB and {max_secs} s). It ships your checkout there, runs the command in the same "
              "directory, streams its output back and exits with its status; files it writes there do not come back. "
              "A command that runs past your shell's time limit (2 minutes unless you ask for more, 10 at most) is "
              "moved to the background or stopped: for a longer run, start the helper in the background yourself and "
@@ -166,7 +182,10 @@ def brief(camp) -> list[str]:
 
 
 MAX_REQUEST = 1 << 20  # bytes
-MAX_ENTRIES = 4096  # a request directory holding more is flooded: listed once, no longer served
+MAX_ENTRIES = 4096  # a request directory holding more is flooded: no longer served
+MAX_OUT = 64 * 1024 ** 2  # bytes of a run's output; a run that writes more is stopped
+MAX_DEPTH = 32  # levels an earlier call's directory is removed to; anything deeper stays aside
+MAX_REMOVALS = 100_000  # entries removed per call
 _RID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
 
@@ -190,9 +209,7 @@ def _validate(req, off: dict) -> tuple[dict | None, str]:
     if norm.startswith("-"):  # it reaches the configured command before its "--"
         return None, "the directory must not start with -"
     limits = {}
-    for key, default_key, max_key in (("mem_gb", "mem_gb", "max_mem_gb"), ("secs", "secs", "max_secs")):
-        default = int(off.get(default_key, 8 if key == "mem_gb" else 1800))
-        top = int(off.get(max_key, default))
+    for key, (default, top) in _limits(off).items():
         v = req.get(key)
         v = default if v is None else v
         if not isinstance(v, int) or isinstance(v, bool) or not 1 <= v <= top:
@@ -201,12 +218,46 @@ def _validate(req, off: dict) -> tuple[dict | None, str]:
     return {"argv": argv, "cwd": norm, **limits}, ""
 
 
+def _remove_bounded(parent_fd: int, name: str, budget: list, depth: int = 0) -> bool:
+    """Remove parent/name without following a link, through handles, at most MAX_DEPTH levels deep and budget[0]
+    entries in all; False (leaving the rest) when a bound is reached."""
+    try:
+        st = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    if budget[0] <= 0:
+        return False
+    budget[0] -= 1
+    if not stat.S_ISDIR(st.st_mode):
+        os.unlink(name, dir_fd=parent_fd)
+        return True
+    if depth >= MAX_DEPTH:
+        return False
+    fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+    try:
+        done = True
+        while True:  # an entry at a time: a directory of any width is never listed whole
+            with os.scandir(fd) as it:
+                entry = next((e.name for e in it), None)
+            if entry is None:
+                break
+            if not _remove_bounded(fd, entry, budget, depth + 1):
+                done = False
+                break
+    finally:
+        os.close(fd)
+    if done:
+        os.rmdir(name, dir_fd=parent_fd)
+    return done
+
+
 def _open_fresh_dir(base, parts) -> int:
     """A handle on a new, empty base/part/.../last, each part opened without following a link: a link or anything but
     a directory in a part's place is removed (never what it points to) and the directory made anew. Whatever stood at
     the last part (an earlier call's requests, a link, a tree of any depth) is moved aside by a rename, never walked,
-    so requests an earlier call left are not run. Every later read and write goes through the handle, so a directory
-    swapped out while the call runs changes nothing the orchestrator touches."""
+    so requests an earlier call left are not run, then removed within bounds (a deeper or larger tree stays aside).
+    Every later read and write goes through the handle, so a directory swapped out while the call runs changes
+    nothing the orchestrator touches."""
     fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
     try:
         *path, last = parts
@@ -234,6 +285,11 @@ def _open_fresh_dir(base, parts) -> int:
                 continue
         else:
             raise OSError(f"could not make a fresh {last} directory")
+        budget = [MAX_REMOVALS]  # earlier calls' directories: removed within the bounds, the rest stays aside
+        with os.scandir(fd) as it:
+            aside = [e.name for e in it if e.name.startswith(f".{last}-")][:64]
+        for name in aside:
+            _remove_bounded(fd, name, budget)
         nfd = os.open(last, _DIR_FLAGS, dir_fd=fd)
         os.close(fd)
         return nfd
@@ -268,11 +324,16 @@ class _Server:
         while not self.stop_event.is_set():
             if not self.flooded:
                 try:
-                    names = os.listdir(self.dfd)
+                    names = []
+                    with os.scandir(self.dfd) as it:  # stops past the limit: a flood is never listed whole
+                        for e in it:
+                            names.append(e.name)
+                            if len(names) > MAX_ENTRIES:
+                                break
                     if len(names) > MAX_ENTRIES:
                         self.flooded = True
-                        self.log(f"offload: the request directory holds {len(names)} entries, more than "
-                                 f"{MAX_ENTRIES}: flooded, no longer served in this call")
+                        self.log(f"offload: the request directory holds more than {MAX_ENTRIES} entries: flooded, "
+                                 "no longer served in this call")
                         names = []
                     for name in sorted(n for n in names if n.endswith(".req.json")):
                         rid = name[:-len(".req.json")]
@@ -322,7 +383,8 @@ class _Server:
         except OSError:
             return False
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:  # a link to someone else's locked file is not it
                 return False
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -398,11 +460,12 @@ class _Server:
                             code, message = 143, "the worker's call ended; the run was stopped"
                         elif not self._helper_alive(rid):
                             code, message = 143, "the helper that asked for the run is gone; the run was stopped"
+                        elif os.fstat(out_fd).st_size > MAX_OUT:
+                            code, message = 1, f"the run's output passed {MAX_OUT // 1024 ** 2} MB; the run was stopped"
                         elif time.monotonic() > deadline:
                             code, message = 124, "the run took longer than its limit and the queue allowance"
             finally:
-                if proc.poll() is None:
-                    _killpg(proc)
+                _killpg(proc)  # also when the command has exited: what it left in its group goes with it
                 tracked.kill([])
                 proc.wait()
                 unregister_child(proc)

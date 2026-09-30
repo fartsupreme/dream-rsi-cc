@@ -154,7 +154,7 @@ class LiveRunner:
         self.round_id, self.checker = round_id, checker
         self.log = log or (lambda msg: None)
         cfg = camp.config
-        offload.check(cfg)  # bad live.offload or live.worker_mem_gb settings stop the run here, at its start
+        offload.check(cfg, camp.root)  # bad live.offload or live.worker_mem_gb settings stop the run at its start
         self.ws = workspaces or Workspaces(camp.root, cfg["workspace"]["repo"], cfg["workspace"].get("base"),
                                            ignore=cfg["workspace"].get("ignore"))
         self.ws.ensure_clone()
