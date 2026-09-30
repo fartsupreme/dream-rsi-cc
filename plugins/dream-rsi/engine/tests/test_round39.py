@@ -178,6 +178,13 @@ class OffloadTest(unittest.TestCase):
         called = (self.fake.parent / "called.txt").read_text().splitlines()
         self.assertEqual(called, [str(self.ws), "12", "600", "sub", "--", "python3", "probe.py", "--p", "2^35"])
 
+    def test_a_command_that_cannot_start_ends_the_request_instead_of_leaving_it_waiting(self):
+        self.fake.unlink()  # the configured command is missing
+        with offload.serve(self.camp, self.ws, "iter0001-001"):
+            out = self.client("--", "true", timeout=20)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("could not run", out.stdout)
+
     def test_limits_over_the_maximum_are_refused(self):
         with offload.serve(self.camp, self.ws, "iter0001-001"):
             for args in (["--mem", "17"], ["--secs", "1801"], ["--mem", "0"]):
