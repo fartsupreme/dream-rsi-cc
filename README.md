@@ -301,10 +301,11 @@ expect a campaign's first rounds to find its loopholes.
   `stream-json` events as they happen: each message, tool call and result, usage events and the final result. A
   call killed at `live.timeout_s` keeps everything up to the kill, and its recorded error names the transcript, its
   last event and the last usage status it saw; anything the call wrote to stderr is kept beside it
-  (`<name>.stderr.txt`). Files are streamed, never read back whole, and never overwritten. A call's result is its
-  session's final result event, as Claude Code's own JSON output reports it (a background task that ends in time
-  gives a second turn and a second result, one still running leaves system events after it); the call fails if an
-  earlier result was an error or anything but whole system events follows the final one. A call that times out
+  (`<name>.stderr.txt`). Transcripts are streamed, never read back whole, and no file is overwritten. A call's result is the
+  worker's own last result; when a background task ends, Claude Code runs a turn of its own, whose result replaces
+  it only if that turn succeeded with a report (one still running leaves system events after the last result). The
+  call fails if an earlier result of its own turns was an error or anything but whole system events follows the
+  last result. A call that times out
   keeps its stderr too. An attempt's
   `worker.transcript` is its last call's. Prunes leave transcripts in place (they are how a failed worker is
   diagnosed), and they are kept until you delete them.

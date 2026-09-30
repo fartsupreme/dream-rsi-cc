@@ -332,7 +332,7 @@ class LiveRunner:
                     proposal = self._read_proposal(nid, res) if res.ok else ""
                     if not res.ok or not proposal:
                         return self._finish(job, res if not res.ok else AgentResult(
-                            ok=False, error="the worker wrote no proposal",
+                            ok=False, error="the worker wrote no proposal", session_id=res.session_id, secs=res.secs,
                             transcript=getattr(res, "transcript", None)), None, checks, no_commit=start)
                     check = self.checker(proposal, nid)
                     checks.append({k: check.get(k) for k in ("verdict", "ticket", "rule", "family", "rationale")})
