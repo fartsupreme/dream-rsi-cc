@@ -103,6 +103,10 @@ expect a campaign's first rounds to find its loopholes.
   proposal directory (nothing under the clone's `.git`), have no network unless `live.allowed_domains` lists hosts, and run with hooks off and no
   user or project settings. They never run drsi themselves. A worker's score comes only from the scorer,
   never from its report.
+- **Heavy runs elsewhere (`live.offload`) never open the worker's sandbox.** A worker asks for a run by writing a
+  request file into its own proposal directory; the orchestrator, outside the sandbox, checks it (an argument list,
+  a directory inside the checkout, limits within the configured maximum) and runs the one configured command with
+  it, never a shell. What that command runs, and where, is the campaign's to contain.
 - **Novelty checks are the orchestrator's, not the worker's.** Each live attempt goes: propose; the
   orchestrator checks the proposal against everything tried; implement. A duplicate or an off-target variant goes
   back with the judge's reasons, up to `live.max_proposals` tries, and is recorded as `not_novel` if it never passes.
@@ -309,6 +313,18 @@ expect a campaign's first rounds to find its loopholes.
   keeps its stderr too. An attempt's
   `worker.transcript` is its last call's. Prunes leave transcripts in place (they are how a failed worker is
   diagnosed), and they are kept until you delete them.
+- **Heavy computation off the workers' machine:** workers run where the loop runs, and so does everything they
+  start. A campaign whose experiments can outgrow that machine sets `live.offload` = `{"cmd": PATH, "mem_gb": 8,
+  "secs": 1800, "max_mem_gb": 24, "max_secs": 3500, "note": "what the host has"}`. Each worker is told to run
+  anything more than a quick check with `python3 <engine>/drsi/offload.py [--mem GB] [--secs S] -- COMMAND
+  [ARGS...]` from its checkout: the orchestrator runs `PATH CHECKOUT MEM_GB SECONDS DIR -- COMMAND [ARGS...]` (DIR
+  relative to the checkout) while the worker's call lasts, and the helper streams its output and exits with its
+  status. `PATH` is the campaign's: ship the checkout to a compute host and run the command there in a sandbox with
+  those limits, say. Runs end with the worker's call, and what they write stays where they ran.
+- **Workers' memory:** `live.worker_mem_gb` caps what a worker's processes on the loop's machine hold together:
+  while their resident total is over it, the largest is killed (never the worker's Claude Code process itself), the
+  worker is told the cap, and the attempt records each kill in `worker.mem_kills`. It is a guard, not a place for
+  heavy work: with `live.offload` set, a worker has somewhere to run what the cap stops.
 - **What counts as a pass:** a live attempt's outcome is `pass` when its score beats its parent's (or, for a new
   branch, the baseline) by more than `live.pass_margin` (default 0). Set it to about twice the scorer's
   test-retest noise, or re-measuring the same code will pass about half the time and keep a stalled family open.
