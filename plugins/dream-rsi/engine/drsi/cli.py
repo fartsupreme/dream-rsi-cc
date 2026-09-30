@@ -56,6 +56,10 @@ def worker_agent(camp: Campaign, workspace, system: str, model: str | None = Non
     proposal_dir.mkdir(parents=True, exist_ok=True)
     settings = {
         "disableAllHooks": True,
+        "autoMemoryEnabled": False,  # no notes shared between workers behind the map (agent.NO_MEMORY does it too)
+        # Claude Code lets a session's file tools write its own project memory folder under ~/.claude even with
+        # auto memory off; nothing a worker does belongs there
+        "permissions": {"deny": ["Edit(~/.claude/**)", "Write(~/.claude/**)"]},
         "sandbox": {
             "enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
             # nothing under the clone's .git: git metadata is the orchestrator's (read-only git works)
