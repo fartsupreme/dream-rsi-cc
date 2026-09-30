@@ -18,6 +18,7 @@ from .families import (assign_families, assign_new, build_frontier, build_taxono
                        load_families, rebuild_families, refresh_frontier)
 from .fingerprint import CLASSIFIER_SYSTEM, fingerprint_nodes
 from .importer import import_jsonl
+from . import offload
 from .llm import ClaudeCLI
 from .checks import pending_checks, run_check  # noqa: F401 - pending_checks is part of the CLI API
 from .novelty import render_check
@@ -62,10 +63,12 @@ def worker_agent(camp: Campaign, workspace, system: str, model: str | None = Non
             "network": {"allowedDomains": list(live.get("allowed_domains") or [])},
         },
     }
+    env = dict(cfg["workspace"].get("env") or {}, **offload.worker_env(camp, workspace))
     return ClaudeAgent(model=model or cfg["llm"].get("worker_model") or cfg["llm"]["model"], tools=WORKER_TOOLS,
                        permission_mode=live["permission_mode"], allowed_tools=list(live.get("allowed_bash") or []),
                        append_system_prompt=system, json_schema=WORKER_REPORT_SCHEMA, timeout=live["timeout_s"],
-                       env=cfg["workspace"].get("env") or None, settings=settings, setting_sources="local")
+                       env=env or None, settings=settings, setting_sources="local",
+                       mem_cap_gb=live.get("worker_mem_gb") or None)
 
 
 def _transcript_path(folder: Path) -> Path:

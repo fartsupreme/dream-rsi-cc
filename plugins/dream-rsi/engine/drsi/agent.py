@@ -92,31 +92,51 @@ class Descendants:
     ends. A process that detaches and loses its parent between two polls is not seen; kill() also takes
     directories, and kills this user's processes still working inside them."""
 
-    def __init__(self, root_pid: int, interval: float = 0.25):
+    def __init__(self, root_pid: int, interval: float = 0.25, mem_cap_bytes: int | None = None):
+        self.root = root_pid
         self.pids = {root_pid}
+        self.mem_cap = mem_cap_bytes  # the descendants' (never the root's) resident total; the largest go while over
+        self.mem_kills: list[dict] = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, args=(interval,), daemon=True)
         self._thread.start()
 
     @staticmethod
-    def _table() -> dict[int, int]:
-        out = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid="], capture_output=True, text=True,
-                             timeout=PS_TIMEOUT).stdout
-        table = {}
+    def _rows() -> dict[int, tuple[int, int, str]]:
+        """{pid: (ppid, resident KB, command name)} for every process."""
+        out = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "rss=", "-o", "comm="],
+                             capture_output=True, text=True, timeout=PS_TIMEOUT).stdout
+        rows = {}
         for line in out.splitlines():
-            parts = line.split()
-            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                table[int(parts[0])] = int(parts[1])
-        return table
+            parts = line.split(None, 3)
+            if len(parts) >= 3 and all(x.isdigit() for x in parts[:3]):
+                rows[int(parts[0])] = (int(parts[1]), int(parts[2]), parts[3] if len(parts) == 4 else "")
+        return rows
 
     def poll(self) -> None:
-        table = self._table()
+        rows = self._rows()
+        table = {pid: r[0] for pid, r in rows.items()}
         grew = True
         while grew:
             new = {pid for pid, ppid in table.items() if ppid in self.pids and pid not in self.pids}
             self.pids |= new
             grew = bool(new)
         self.pids = {pid for pid in self.pids if pid in table}  # gone: forget, so a reused pid is never hit
+        if self.mem_cap:
+            # the cap is on the processes together: a pool of processes each under it can fill the machine as well
+            held = {pid: rows[pid][1] * 1024 for pid in self.pids - {self.root}}
+            total = sum(held.values())
+            for pid in sorted(held, key=held.get, reverse=True):
+                if total <= self.mem_cap:
+                    break
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    continue
+                self.mem_kills.append({"pid": pid, "gb": round(held[pid] / 1024 ** 3, 2),
+                                       "total_gb": round(total / 1024 ** 3, 2),
+                                       "command": os.path.basename(rows[pid][2])[:60]})
+                total -= held[pid]
 
     def _loop(self, interval: float) -> None:
         while not self._stop.wait(interval):
@@ -230,14 +250,16 @@ def _headless(pids: set[int]) -> set[int] | None:
 
 
 def run_group(args, input=None, capture_output=True, text=True, timeout=None, cwd=None, env=None,
-              sweep: list | None = None, stdout_path=None, stderr_path=None):
+              sweep: list | None = None, stdout_path=None, stderr_path=None, mem_cap_bytes: int | None = None):
     """subprocess.run with the child in its own process group, killed on exit or timeout, so tool
     subprocesses cannot outlive the run or keep writing after it; output goes through files so a
     lingering grandchild cannot hold a pipe open. With `sweep`, descendants that left the group and
     processes still working inside those directories are killed too. With `stdout_path`, stdout is appended to that
     file, which stays (whatever the child wrote before a kill or a timeout is kept) and is not read back: the
     returned stdout is empty, so a large transcript never has to fit in memory. With `stderr_path`, stderr is
-    appended to that file the same way (and still returned), so it outlives a kill too."""
+    appended to that file the same way (and still returned), so it outlives a kill too. With `mem_cap_bytes`, while
+    the child's descendants (never the child itself) together hold more resident memory than that, the largest of them
+    is killed; the returned process (or the TimeoutExpired raised) carries the kills in `mem_kills`."""
     refuse_if_stopping()
     out_file = open(stdout_path, "ab") if stdout_path is not None else tempfile.TemporaryFile()
     try:
@@ -251,12 +273,14 @@ def run_group(args, input=None, capture_output=True, text=True, timeout=None, cw
         proc = subprocess.Popen(args, stdin=fin, stdout=fout, stderr=ferr, cwd=cwd, env=env,
                                 start_new_session=True)
         register_child(proc)
-        tracked = Descendants(proc.pid, interval=0.5) if sweep else None
+        tracked = Descendants(proc.pid, interval=0.5, mem_cap_bytes=mem_cap_bytes) if (sweep or mem_cap_bytes) \
+            else None
         try:
             rc = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             _killpg(proc)
             proc.wait()
+            e.mem_kills = tracked.mem_kills if tracked is not None else []
             raise
         except BaseException:
             _killpg(proc)
@@ -264,12 +288,14 @@ def run_group(args, input=None, capture_output=True, text=True, timeout=None, cw
         finally:
             _killpg(proc)
             if tracked is not None:
-                tracked.kill([Path(d) for d in sweep])
+                tracked.kill([Path(d) for d in (sweep or [])])
             unregister_child(proc)
         fout.seek(0)
         ferr.seek(0)
         out = "" if stdout_path is not None else fout.read().decode("utf-8", "replace")
-        return subprocess.CompletedProcess(args, rc, stdout=out, stderr=ferr.read().decode("utf-8", "replace"))
+        done = subprocess.CompletedProcess(args, rc, stdout=out, stderr=ferr.read().decode("utf-8", "replace"))
+        done.mem_kills = tracked.mem_kills if tracked is not None else []
+        return done
 
 
 @dataclass
@@ -281,6 +307,7 @@ class AgentResult:
     secs: float = 0.0
     error: str = ""
     transcript: str | None = None  # the call's stream-json transcript, when it was given one
+    mem_kills: list | None = None  # processes of the call killed over the memory cap: {pid, gb, total_gb, command}
 
 
 class ClaudeAgent:
@@ -288,7 +315,7 @@ class ClaudeAgent:
                  allowed_tools: list[str] | None = None, append_system_prompt: str | None = None,
                  json_schema: dict | None = None, binary: str = "claude", runner=run_group,
                  timeout: int = 6 * 3600, extra_args: tuple = (), env: dict | None = None,
-                 settings: dict | None = None, setting_sources: str = "project,local"):
+                 settings: dict | None = None, setting_sources: str = "project,local", mem_cap_gb: float | None = None):
         self.model, self.tools, self.permission_mode = model, tools, permission_mode
         self.allowed_tools = allowed_tools or []
         self.append_system_prompt = append_system_prompt
@@ -298,6 +325,7 @@ class ClaudeAgent:
         self.env = env
         self.settings = settings
         self.setting_sources = setting_sources
+        self.mem_cap_gb = mem_cap_gb  # the call's processes together (never the call itself); the largest go
 
     def build_args(self, add_dirs=(), stream: bool = False) -> list[str]:
         # stream: every event of the session goes to stdout as it happens (print mode needs --verbose for it)
@@ -333,36 +361,40 @@ class ClaudeAgent:
                 fh.write(json.dumps({"type": "drsi_call", "model": self.model, "prompt": prompt,
                                      "system": self.append_system_prompt, "cwd": str(cwd)}) + "\n")
             kw = {"stdout_path": tpath, "stderr_path": epath}
+        if self.mem_cap_gb:
+            kw["mem_cap_bytes"] = int(self.mem_cap_gb * 1024 ** 3)
         try:
             proc = self.runner(self.build_args(add_dirs, stream=transcript is not None), input=prompt,
                                capture_output=True, text=True, timeout=self.timeout, cwd=str(cwd), sweep=[str(cwd)],
                                env=dict(os.environ, **{k: str(v) for k, v in self.env.items()}) if self.env else None,
                                **kw)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             where = f"; {_stream_summary(tpath)}{_stderr_tail(epath)}" if tpath else ""
             return AgentResult(ok=False, secs=time.time() - t0, transcript=tpath,
-                               error=f"agent timed out after {self.timeout}s{where}")
+                               error=f"agent timed out after {self.timeout}s{where}",
+                               mem_kills=list(getattr(e, "mem_kills", []) or []))
         finally:
             if epath and os.path.exists(epath) and os.path.getsize(epath) == 0:
                 os.unlink(epath)  # nothing was written to stderr
         secs = time.time() - t0
+        kills = list(getattr(proc, "mem_kills", []) or [])
         if tpath:
             env, why = _stream_result(tpath)
             if env is None:
-                return AgentResult(ok=False, secs=secs, transcript=tpath,
+                return AgentResult(ok=False, secs=secs, transcript=tpath, mem_kills=kills,
                                    error=f"exit {proc.returncode}; {why}; {_stream_summary(tpath)}{_stderr_tail(epath)}")
         else:
             try:
                 env = json.loads(proc.stdout)
             except json.JSONDecodeError:
-                return AgentResult(ok=False, secs=secs, error=f"exit {proc.returncode}; non-JSON output: "
+                return AgentResult(ok=False, secs=secs, mem_kills=kills, error=f"exit {proc.returncode}; non-JSON output: "
                                                               f"{(proc.stdout or proc.stderr)[-400:]}")
         ok = proc.returncode == 0 and not env.get("is_error") and env.get("subtype") == "success"
         err = "" if ok else f"subtype={env.get('subtype')} {str(env.get('result'))[:300]}"
         if err and tpath:
             err += f"; transcript {tpath}"
         return AgentResult(ok=ok, result_text=str(env.get("result") or ""), structured=env.get("structured_output"),
-                           session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath)
+                           session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath, mem_kills=kills)
 
 
 def _lines(path):

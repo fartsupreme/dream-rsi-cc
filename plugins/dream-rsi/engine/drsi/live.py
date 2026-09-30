@@ -35,6 +35,7 @@ from .dream import SEED_POLICY, run_dream
 from .families import load_families
 from .guard import check_policy_source, safe_builtins
 from .mapview import render_map
+from . import offload
 from .novelty import render_check, text_hash
 from .question import POLICY_HASH_SEED, ROOT, IllegalBatch, QuestionBase
 from .scorer import run_scorer
@@ -221,6 +222,11 @@ class LiveRunner:
                  f"After you finish, the campaign scorer (`{cfg['scorer']['cmd']}`) runs on a clean checkout of "
                  "what you committed, and its verdict, not your report, is what gets recorded. Your shell runs "
                  "in a sandbox: you can write only inside the workspace and your proposal directory.", ""]
+        parts += offload.brief(self.camp)
+        cap = cfg["live"].get("worker_mem_gb")
+        if cap:
+            parts += [f"When the processes you start here together go over {cap} GB of memory, they are killed, "
+                      "largest first, until they are under it.", ""]
         if parent:
             fp = parent.get("fingerprint") or {}
             raw = (parent.get("artifacts") or {}).get("raw_score")
@@ -294,10 +300,11 @@ class LiveRunner:
     def _call(self, path, system, nid: str | None = None) -> AgentResult:
         model = self._models.get(nid)
         try:
-            if model:
-                res = self.worker_fn(path, WORKER_PROMPT, system, model=model)
-            else:
-                res = self.worker_fn(path, WORKER_PROMPT, system)
+            with offload.serve(self.camp, path, Path(path).name, log=self.log):  # the worker's heavy runs, elsewhere
+                if model:
+                    res = self.worker_fn(path, WORKER_PROMPT, system, model=model)
+                else:
+                    res = self.worker_fn(path, WORKER_PROMPT, system)
         except Exception as e:  # noqa: BLE001 - a crashed worker is a recorded attempt, not a lost round
             res = AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
         if nid is not None:
@@ -422,7 +429,8 @@ class LiveRunner:
         """What the attempt records of its worker: the last call's session, time and transcript (logs/workers/<id>/
         holds every call's), and the model."""
         return {"session": getattr(res, "session_id", None), "secs": round(getattr(res, "secs", 0.0) or 0.0, 1),
-                "model": self._models.get(nid) or self.default_model, "transcript": getattr(res, "transcript", None)}
+                "model": self._models.get(nid) or self.default_model, "transcript": getattr(res, "transcript", None),
+                "mem_kills": list(getattr(res, "mem_kills", None) or [])}
 
     def _setup_failed(self, cell, nid, parent_id, parent_commit, error: Exception) -> dict:
         """A cell whose workspace could not be made is recorded as an orchestration failure under its parent,
