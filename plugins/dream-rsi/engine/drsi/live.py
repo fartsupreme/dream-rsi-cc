@@ -327,14 +327,16 @@ class LiveRunner:
                     proposal = self._read_proposal(nid, res) if res.ok else ""
                     if not res.ok or not proposal:
                         return self._finish(job, res if not res.ok else AgentResult(
-                            ok=False, error="the worker wrote no proposal"), None, checks, no_commit=start)
+                            ok=False, error="the worker wrote no proposal",
+                            transcript=getattr(res, "transcript", None)), None, checks, no_commit=start)
                     check = self.checker(proposal, nid)
                     checks.append({k: check.get(k) for k in ("verdict", "ticket", "rule", "family", "rationale")})
                     if check["verdict"] not in ("duplicate", "off_target"):
                         break
                     feedback = render_check(check)
                 if check["verdict"] in ("duplicate", "off_target"):
-                    return self._finish(job, AgentResult(ok=True), check, checks, not_novel=True, no_commit=start)
+                    return self._finish(job, AgentResult(ok=True, transcript=getattr(res, "transcript", None)), check,
+                                        checks, not_novel=True, no_commit=start)
             res = self._call(path, self.brief_implement(nid, parent, branch, path, check, map_text), nid)
             return self._finish(job, res, check, checks)
         except Exception as e:  # noqa: BLE001 - an orchestration failure says nothing about the idea

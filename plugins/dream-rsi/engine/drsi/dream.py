@@ -316,6 +316,7 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     inc_src = method.read_text()
     worlds_total, on_record = len(worlds), None
     worlds = comparable(worlds)  # live rounds whose every attempt keeps its cell
+    compared = len(worlds)
     started = time.monotonic()
     inc = evaluate_policy(method, worlds, **params) if worlds else {"ok": True, "reward": float("-inf"), "measured": {
         "runs": {}}, "default_beta": 0.0}
@@ -329,7 +330,7 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
         rows = inc["measured"]["runs"].get(str(float(inc["default_beta"])), [])
         worlds = [w for w, row in zip(worlds, rows) if row["off_record"] == 0]
         on_record = len(worlds)
-        if worlds and on_record < worlds_total:
+        if worlds and on_record < compared:  # re-evaluate only if the on-record filter left a world out
             started = time.monotonic()
             inc = evaluate_policy(method, worlds, **params)
             inc_time = time.monotonic() - started
