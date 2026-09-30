@@ -39,8 +39,8 @@ class StreamRunner:
         self.stdout, self.rc, self.raise_timeout, self.calls = stdout, rc, raise_timeout, []
 
     def __call__(self, args, input=None, capture_output=None, text=None, timeout=None, cwd=None, env=None,
-                 sweep=None, stdout_path=None):
-        self.calls.append({"args": args, "stdout_path": stdout_path})
+                 sweep=None, stdout_path=None, stderr_path=None):
+        self.calls.append({"args": args, "stdout_path": stdout_path, "stderr_path": stderr_path})
         if stdout_path is not None:
             with open(stdout_path, "a") as fh:
                 fh.write(self.stdout)

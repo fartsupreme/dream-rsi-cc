@@ -301,8 +301,11 @@ expect a campaign's first rounds to find its loopholes.
   `stream-json` events as they happen: each message, tool call and result, usage events and the final result. A
   call killed at `live.timeout_s` keeps everything up to the kill, and its recorded error names the transcript, its
   last event and the last usage status it saw; anything the call wrote to stderr is kept beside it
-  (`<name>.stderr.txt`). Files are streamed, never read back whole, and never overwritten. A call succeeds only if
-  its stream ends as Claude Code ends a session: exactly one result event, as the last line. An attempt's
+  (`<name>.stderr.txt`). Files are streamed, never read back whole, and never overwritten. A call's result is its
+  session's final result event, as Claude Code's own JSON output reports it (a background task that ends in time
+  gives a second turn and a second result, one still running leaves system events after it); the call fails if an
+  earlier result was an error or anything but whole system events follows the final one. A call that times out
+  keeps its stderr too. An attempt's
   `worker.transcript` is its last call's. Prunes leave transcripts in place (they are how a failed worker is
   diagnosed), and they are kept until you delete them.
 - **What counts as a pass:** a live attempt's outcome is `pass` when its score beats its parent's (or, for a new
