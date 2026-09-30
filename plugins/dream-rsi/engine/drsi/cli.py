@@ -68,13 +68,21 @@ def worker_agent(camp: Campaign, workspace, system: str, model: str | None = Non
                        env=cfg["workspace"].get("env") or None, settings=settings, setting_sources="local")
 
 
+def _transcript_path(folder: Path) -> Path:
+    """A new transcript file in folder, named by the UTC time of the call so a folder's calls sort in order."""
+    now = time.time()
+    return folder / (time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + f"{int(now * 1e6) % 1_000_000:06d}Z.jsonl")
+
+
 def make_worker(camp: Campaign):
     if WORKER_FACTORY is not None:
         return WORKER_FACTORY(camp)
 
     def worker(workspace, prompt, system, model=None):
         agent = worker_agent(camp, workspace, system, model)
-        return agent.run(workspace, prompt, add_dirs=[camp.root / "work" / "_proposals" / Path(workspace).name])
+        name = Path(workspace).name
+        return agent.run(workspace, prompt, add_dirs=[camp.root / "work" / "_proposals" / name],
+                         transcript=_transcript_path(camp.root / "logs" / "workers" / name))
     return worker
 
 
@@ -98,7 +106,8 @@ def make_developer(camp: Campaign):
         return DEVELOPER_FACTORY(camp)
 
     def developer(sandbox, prompt):
-        return developer_agent(camp).run(sandbox, prompt)
+        return developer_agent(camp).run(sandbox, prompt,
+                                         transcript=_transcript_path(camp.root / "logs" / "developer"))
     return developer
 
 

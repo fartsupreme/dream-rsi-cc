@@ -230,13 +230,15 @@ def _headless(pids: set[int]) -> set[int] | None:
 
 
 def run_group(args, input=None, capture_output=True, text=True, timeout=None, cwd=None, env=None,
-              sweep: list | None = None):
+              sweep: list | None = None, stdout_path=None):
     """subprocess.run with the child in its own process group, killed on exit or timeout, so tool
     subprocesses cannot outlive the run or keep writing after it; output goes through files so a
     lingering grandchild cannot hold a pipe open. With `sweep`, descendants that left the group and
-    processes still working inside those directories are killed too."""
+    processes still working inside those directories are killed too. With `stdout_path`, stdout goes to that file,
+    which stays: whatever the child wrote before a kill or a timeout is kept."""
     refuse_if_stopping()
-    with tempfile.TemporaryFile() as fin, tempfile.TemporaryFile() as fout, tempfile.TemporaryFile() as ferr:
+    out_file = open(stdout_path, "w+b") if stdout_path is not None else tempfile.TemporaryFile()
+    with tempfile.TemporaryFile() as fin, out_file as fout, tempfile.TemporaryFile() as ferr:
         fin.write((input or "").encode())
         fin.seek(0)
         proc = subprocess.Popen(args, stdin=fin, stdout=fout, stderr=ferr, cwd=cwd, env=env,
@@ -271,6 +273,7 @@ class AgentResult:
     session_id: str | None = None
     secs: float = 0.0
     error: str = ""
+    transcript: str | None = None  # the call's stream-json transcript, when it was given one
 
 
 class ClaudeAgent:
@@ -289,8 +292,10 @@ class ClaudeAgent:
         self.settings = settings
         self.setting_sources = setting_sources
 
-    def build_args(self, add_dirs=()) -> list[str]:
-        args = [self.binary, "-p", "--model", self.model, "--output-format", "json",
+    def build_args(self, add_dirs=(), stream: bool = False) -> list[str]:
+        # stream: every event of the session goes to stdout as it happens (print mode needs --verbose for it)
+        out = ["stream-json", "--verbose"] if stream else ["json"]
+        args = [self.binary, "-p", "--model", self.model, "--output-format", *out,
                 "--no-session-persistence", "--setting-sources", self.setting_sources, "--strict-mcp-config",
                 "--tools", self.tools, "--permission-mode", self.permission_mode]
         if self.settings:
@@ -305,21 +310,75 @@ class ClaudeAgent:
             args += ["--add-dir", str(d)]
         return args + list(self.extra_args)
 
-    def run(self, cwd, prompt: str, add_dirs=()) -> AgentResult:
+    def run(self, cwd, prompt: str, add_dirs=(), transcript=None) -> AgentResult:
+        """With `transcript` (a file path), the call streams every event of its session into that file as it
+        happens, so even a call killed at the timeout leaves its whole record; the result is read from the stream's
+        final result event, which carries the fields the plain JSON output does."""
         t0 = time.time()
+        kw = {}
+        if transcript is not None:
+            Path(transcript).parent.mkdir(parents=True, exist_ok=True)
+            kw["stdout_path"] = str(transcript)
+        tpath = str(transcript) if transcript is not None else None
         try:
-            proc = self.runner(self.build_args(add_dirs), input=prompt, capture_output=True, text=True,
-                               timeout=self.timeout, cwd=str(cwd), sweep=[str(cwd)],
-                               env=dict(os.environ, **{k: str(v) for k, v in self.env.items()}) if self.env else None)
+            proc = self.runner(self.build_args(add_dirs, stream=transcript is not None), input=prompt,
+                               capture_output=True, text=True, timeout=self.timeout, cwd=str(cwd), sweep=[str(cwd)],
+                               env=dict(os.environ, **{k: str(v) for k, v in self.env.items()}) if self.env else None,
+                               **kw)
         except subprocess.TimeoutExpired:
-            return AgentResult(ok=False, secs=time.time() - t0, error=f"agent timed out after {self.timeout}s")
+            where = f"; {_stream_summary(tpath)}" if tpath else ""
+            return AgentResult(ok=False, secs=time.time() - t0, transcript=tpath,
+                               error=f"agent timed out after {self.timeout}s{where}")
         secs = time.time() - t0
-        try:
-            env = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            return AgentResult(ok=False, secs=secs,
-                               error=f"exit {proc.returncode}; non-JSON output: {(proc.stdout or proc.stderr)[-400:]}")
+        if tpath:
+            env = _stream_result(proc.stdout)
+            if env is None:
+                return AgentResult(ok=False, secs=secs, transcript=tpath,
+                                   error=f"exit {proc.returncode}; no result in the stream; {_stream_summary(tpath)}")
+        else:
+            try:
+                env = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                return AgentResult(ok=False, secs=secs, error=f"exit {proc.returncode}; non-JSON output: "
+                                                              f"{(proc.stdout or proc.stderr)[-400:]}")
         ok = proc.returncode == 0 and not env.get("is_error") and env.get("subtype") == "success"
+        err = "" if ok else f"subtype={env.get('subtype')} {str(env.get('result'))[:300]}"
+        if err and tpath:
+            err += f"; transcript {tpath}"
         return AgentResult(ok=ok, result_text=str(env.get("result") or ""), structured=env.get("structured_output"),
-                           session_id=env.get("session_id"), secs=secs,
-                           error="" if ok else f"subtype={env.get('subtype')} {str(env.get('result'))[:300]}")
+                           session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath)
+
+
+def _stream_events(text: str) -> list[dict]:
+    out = []
+    for line in (text or "").splitlines():
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(e, dict):
+            out.append(e)
+    return out
+
+
+def _stream_result(text: str) -> dict | None:
+    """The stream's final result event (the one Claude Code writes when the session ends)."""
+    return next((e for e in reversed(_stream_events(text)) if e.get("type") == "result"), None)
+
+
+def _stream_summary(path) -> str:
+    """One line on a transcript: where it is, how many events it holds, the last event and the last rate-limit
+    status the call saw, so an error says where the call stood without opening the file."""
+    try:
+        events = _stream_events(Path(path).read_text(errors="replace"))
+    except OSError:
+        return f"transcript {path} (unreadable)"
+    parts = [f"transcript {path}: {len(events)} events"]
+    if events:
+        last = events[-1]
+        parts.append(f"last {last.get('type')}" + (f"/{last['subtype']}" if last.get("subtype") else ""))
+    rate = next((e.get("rate_limit_info") or {} for e in reversed(events) if e.get("type") == "rate_limit_event"), None)
+    if rate is not None:
+        parts.append(f"rate limit {rate.get('status')} ({rate.get('rateLimitType')}, "
+                     f"utilization {rate.get('utilization')})")
+    return ", ".join(parts)

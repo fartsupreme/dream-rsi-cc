@@ -407,7 +407,8 @@ class LiveRunner:
                        "scorer_summary": str(sc.get("summary") or sc.get("error") or "")[:800],
                        "self_reported_score": report.get("self_reported_score")},
             worker={"session": res.session_id, "secs": round(res.secs, 1),
-                    "model": self._models.get(nid) or self.default_model},
+                    "model": self._models.get(nid) or self.default_model,
+                    "transcript": getattr(res, "transcript", None)},  # the last call's; logs/workers/<id>/ has all
             ext={"round": self.round_id, "cell": cell, "proposal_sha": text_hash(proposal)}, **fields)
 
     def _setup_failed(self, cell, nid, parent_id, parent_commit, error: Exception) -> dict:

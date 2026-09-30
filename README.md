@@ -293,6 +293,13 @@ expect a campaign's first rounds to find its loopholes.
   `search.W = 6` runs three of each. The assignment rotates by one slot each batch: a policy lists a batch best cell
   first, so a fixed assignment would always give the last model the least promising cell. One model proposes and
   builds an attempt, every attempt records its model, and so does each frozen world.
+- **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
+  session to `logs/workers/<attempt>/<UTC time>.jsonl` or `logs/developer/<UTC time>.jsonl` in the campaign, as
+  Claude Code's `stream-json` events, as they happen: the prompt, each message, tool call and result, rate-limit
+  events and the final result. A call killed at `live.timeout_s` keeps everything up to the kill, and its recorded
+  error names the transcript, its last event and the last rate-limit status it saw. An attempt's `worker.transcript`
+  is its last call's. Prunes leave transcripts in place (they are how a failed worker is diagnosed), and they are
+  kept until you delete them.
 - **What counts as a pass:** a live attempt's outcome is `pass` when its score beats its parent's (or, for a new
   branch, the baseline) by more than `live.pass_margin` (default 0). Set it to about twice the scorer's
   test-retest noise, or re-measuring the same code will pass about half the time and keep a stalled family open.
