@@ -39,8 +39,11 @@ class FileOnlyRunner(StreamRunner):
         super().__init__(stdout, rc, **kw)
         self.stderr = stderr
 
-    def __call__(self, args, stdout_path=None, **kw):
-        proc = super().__call__(args, stdout_path=stdout_path, **kw)
+    def __call__(self, args, stdout_path=None, stderr_path=None, **kw):
+        if stderr_path is not None and self.stderr:  # as the real runner does: stderr goes to its file
+            with open(stderr_path, "a") as fh:
+                fh.write(self.stderr)
+        proc = super().__call__(args, stdout_path=stdout_path, stderr_path=stderr_path, **kw)
         return subprocess.CompletedProcess(args, proc.returncode, stdout="", stderr=self.stderr)
 
 

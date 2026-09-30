@@ -169,6 +169,7 @@ class LiveRunner:
         self._models: dict[str, str | None] = {}
         self._batches = 0  # model slots rotate by one each batch, so no model always gets the last-ranked cell
         self.ids: list[str] = []
+        self._last_call: dict[str, AgentResult] = {}
         self.shown_family: dict[str, str | None] = {}  # the family each attempt was shown with at its reveal
         self._seq = 0
         self._git_lock = threading.Lock()
@@ -294,10 +295,14 @@ class LiveRunner:
         model = self._models.get(nid)
         try:
             if model:
-                return self.worker_fn(path, WORKER_PROMPT, system, model=model)
-            return self.worker_fn(path, WORKER_PROMPT, system)
+                res = self.worker_fn(path, WORKER_PROMPT, system, model=model)
+            else:
+                res = self.worker_fn(path, WORKER_PROMPT, system)
         except Exception as e:  # noqa: BLE001 - a crashed worker is a recorded attempt, not a lost round
-            return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
+            res = AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
+        if nid is not None:
+            self._last_call[nid] = res  # an attempt that fails later still names its last call's transcript
+        return res
 
     def _read_proposal(self, node_id: str, res: AgentResult) -> str:
         text = _read_regular(self.proposal_file(node_id), 256_000)
@@ -335,7 +340,8 @@ class LiveRunner:
                         break
                     feedback = render_check(check)
                 if check["verdict"] in ("duplicate", "off_target"):
-                    return self._finish(job, AgentResult(ok=True, transcript=getattr(res, "transcript", None)), check,
+                    return self._finish(job, AgentResult(ok=True, session_id=res.session_id, secs=res.secs,
+                                                         transcript=getattr(res, "transcript", None)), check,
                                         checks, not_novel=True, no_commit=start)
             res = self._call(path, self.brief_implement(nid, parent, branch, path, check, map_text), nid)
             return self._finish(job, res, check, checks)
@@ -352,7 +358,8 @@ class LiveRunner:
                              text={"orchestrator_error": f"{type(e).__name__}: {e}"},
                              artifacts={"commit": start, "changed": [], "checks": checks,
                                         "outcome": "inconclusive", "killed_by": "orchestrator_error"},
-                             fingerprint={"outcome": "inconclusive", "killed_by": "orchestrator_error"})
+                             fingerprint={"outcome": "inconclusive", "killed_by": "orchestrator_error"},
+                             worker=self._worker_record(nid, self._last_call.get(nid)))
 
     def _finish(self, job, res: AgentResult, check: dict | None, checks: list, not_novel: bool = False,
                 no_commit: str | None = None) -> dict:
@@ -408,10 +415,14 @@ class LiveRunner:
                        "outcome": outcome, "killed_by": killed_by,
                        "scorer_summary": str(sc.get("summary") or sc.get("error") or "")[:800],
                        "self_reported_score": report.get("self_reported_score")},
-            worker={"session": res.session_id, "secs": round(res.secs, 1),
-                    "model": self._models.get(nid) or self.default_model,
-                    "transcript": getattr(res, "transcript", None)},  # the last call's; logs/workers/<id>/ has all
+            worker=self._worker_record(nid, res),
             ext={"round": self.round_id, "cell": cell, "proposal_sha": text_hash(proposal)}, **fields)
+
+    def _worker_record(self, nid: str, res: AgentResult | None) -> dict:
+        """What the attempt records of its worker: the last call's session, time and transcript (logs/workers/<id>/
+        holds every call's), and the model."""
+        return {"session": getattr(res, "session_id", None), "secs": round(getattr(res, "secs", 0.0) or 0.0, 1),
+                "model": self._models.get(nid) or self.default_model, "transcript": getattr(res, "transcript", None)}
 
     def _setup_failed(self, cell, nid, parent_id, parent_commit, error: Exception) -> dict:
         """A cell whose workspace could not be made is recorded as an orchestration failure under its parent,

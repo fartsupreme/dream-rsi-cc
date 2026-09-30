@@ -230,16 +230,18 @@ def _headless(pids: set[int]) -> set[int] | None:
 
 
 def run_group(args, input=None, capture_output=True, text=True, timeout=None, cwd=None, env=None,
-              sweep: list | None = None, stdout_path=None):
+              sweep: list | None = None, stdout_path=None, stderr_path=None):
     """subprocess.run with the child in its own process group, killed on exit or timeout, so tool
     subprocesses cannot outlive the run or keep writing after it; output goes through files so a
     lingering grandchild cannot hold a pipe open. With `sweep`, descendants that left the group and
     processes still working inside those directories are killed too. With `stdout_path`, stdout is appended to that
     file, which stays (whatever the child wrote before a kill or a timeout is kept) and is not read back: the
-    returned stdout is empty, so a large transcript never has to fit in memory."""
+    returned stdout is empty, so a large transcript never has to fit in memory. With `stderr_path`, stderr is
+    appended to that file the same way (and still returned), so it outlives a kill too."""
     refuse_if_stopping()
     out_file = open(stdout_path, "ab") if stdout_path is not None else tempfile.TemporaryFile()
-    with tempfile.TemporaryFile() as fin, out_file as fout, tempfile.TemporaryFile() as ferr:
+    err_file = open(stderr_path, "a+b") if stderr_path is not None else tempfile.TemporaryFile()
+    with tempfile.TemporaryFile() as fin, out_file as fout, err_file as ferr:
         fin.write((input or "").encode())
         fin.seek(0)
         proc = subprocess.Popen(args, stdin=fin, stdout=fout, stderr=ferr, cwd=cwd, env=env,
@@ -320,30 +322,31 @@ class ClaudeAgent:
         t0 = time.time()
         kw = {}
         tpath = str(transcript) if transcript is not None else None
+        epath = str(Path(tpath).with_name(Path(tpath).stem + ".stderr.txt")) if tpath else None
         if tpath:
             Path(tpath).parent.mkdir(parents=True, exist_ok=True)
-            with open(tpath, "x") as fh:
+            with open(tpath, "x", encoding="utf-8") as fh:
                 fh.write(json.dumps({"type": "drsi_call", "model": self.model, "prompt": prompt,
                                      "system": self.append_system_prompt, "cwd": str(cwd)}) + "\n")
-            kw["stdout_path"] = tpath
+            kw = {"stdout_path": tpath, "stderr_path": epath}
         try:
             proc = self.runner(self.build_args(add_dirs, stream=transcript is not None), input=prompt,
                                capture_output=True, text=True, timeout=self.timeout, cwd=str(cwd), sweep=[str(cwd)],
                                env=dict(os.environ, **{k: str(v) for k, v in self.env.items()}) if self.env else None,
                                **kw)
         except subprocess.TimeoutExpired:
-            where = f"; {_stream_summary(tpath)}" if tpath else ""
+            where = f"; {_stream_summary(tpath)}{_stderr_tail(epath)}" if tpath else ""
             return AgentResult(ok=False, secs=time.time() - t0, transcript=tpath,
                                error=f"agent timed out after {self.timeout}s{where}")
+        finally:
+            if epath and os.path.exists(epath) and os.path.getsize(epath) == 0:
+                os.unlink(epath)  # nothing was written to stderr
         secs = time.time() - t0
         if tpath:
-            if (proc.stderr or "").strip():
-                Path(tpath).with_name(Path(tpath).stem + ".stderr.txt").write_text(proc.stderr)
             env, why = _stream_result(tpath)
             if env is None:
-                tail = f"; stderr: {proc.stderr.strip()[-300:]}" if (proc.stderr or "").strip() else ""
                 return AgentResult(ok=False, secs=secs, transcript=tpath,
-                                   error=f"exit {proc.returncode}; {why}; {_stream_summary(tpath)}{tail}")
+                                   error=f"exit {proc.returncode}; {why}; {_stream_summary(tpath)}{_stderr_tail(epath)}")
         else:
             try:
                 env = json.loads(proc.stdout)
@@ -360,7 +363,7 @@ class ClaudeAgent:
 
 def _lines(path):
     """The file's lines one at a time (a transcript can be larger than memory should hold)."""
-    with open(path, errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         yield from fh
 
 
@@ -373,24 +376,37 @@ def _json(line: str) -> dict | None:
 
 
 def _stream_result(path) -> tuple[dict | None, str]:
-    """The session's result: Claude Code ends a session with exactly one result event, as its last line. Any other
-    shape (none, more than one, or anything after it) is not a stream Claude Code finished, and gives (None, why)."""
-    found, results, after = None, 0, False
+    """The session's result: its final result event, as Claude Code's own JSON output reports it. A session can hold
+    more than one (a background task that ends in time gets a second turn) and system events after the last (a
+    background task still running when the session ends). It fails if an earlier result was an error (a success
+    after an error is not what Claude Code writes), or if anything but whole system events follows the final one;
+    a failure gives (None, why)."""
+    found, earlier_error, after = None, False, None
     for line in _lines(path):
         if not line.strip():
             continue
         ev = _json(line)
         if ev is not None and ev.get("type") == "result":
-            found, results, after = ev, results + 1, False
-        elif found is not None:
-            after = True  # a line (whole or torn) after the result
-    if results == 0:
+            if found is not None and (found.get("is_error") or found.get("subtype") != "success"):
+                earlier_error = True
+            found, after = ev, None
+        elif found is not None and (ev is None or ev.get("type") != "system"):
+            after = "a torn line" if ev is None else f"a {ev.get('type')} event"
+    if found is None:
         return None, "no result in the stream"
-    if results > 1:
-        return None, f"{results} result events in the stream (a session ends with one)"
+    if earlier_error:
+        return None, "an earlier result in the session was an error"
     if after:
-        return None, "the stream goes on after its result"
+        return None, f"the stream goes on after its final result ({after})"
     return found, ""
+
+
+def _stderr_tail(epath) -> str:
+    try:
+        text = Path(epath).read_text(encoding="utf-8", errors="replace").strip() if epath else ""
+    except OSError:
+        return ""
+    return f"; stderr: {text[-300:]}" if text else ""
 
 
 def _stream_summary(path) -> str:
