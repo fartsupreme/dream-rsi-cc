@@ -234,10 +234,11 @@ def run_group(args, input=None, capture_output=True, text=True, timeout=None, cw
     """subprocess.run with the child in its own process group, killed on exit or timeout, so tool
     subprocesses cannot outlive the run or keep writing after it; output goes through files so a
     lingering grandchild cannot hold a pipe open. With `sweep`, descendants that left the group and
-    processes still working inside those directories are killed too. With `stdout_path`, stdout goes to that file,
-    which stays: whatever the child wrote before a kill or a timeout is kept."""
+    processes still working inside those directories are killed too. With `stdout_path`, stdout is appended to that
+    file, which stays (whatever the child wrote before a kill or a timeout is kept) and is not read back: the
+    returned stdout is empty, so a large transcript never has to fit in memory."""
     refuse_if_stopping()
-    out_file = open(stdout_path, "w+b") if stdout_path is not None else tempfile.TemporaryFile()
+    out_file = open(stdout_path, "ab") if stdout_path is not None else tempfile.TemporaryFile()
     with tempfile.TemporaryFile() as fin, out_file as fout, tempfile.TemporaryFile() as ferr:
         fin.write((input or "").encode())
         fin.seek(0)
@@ -261,8 +262,8 @@ def run_group(args, input=None, capture_output=True, text=True, timeout=None, cw
             unregister_child(proc)
         fout.seek(0)
         ferr.seek(0)
-        return subprocess.CompletedProcess(args, rc, stdout=fout.read().decode("utf-8", "replace"),
-                                           stderr=ferr.read().decode("utf-8", "replace"))
+        out = "" if stdout_path is not None else fout.read().decode("utf-8", "replace")
+        return subprocess.CompletedProcess(args, rc, stdout=out, stderr=ferr.read().decode("utf-8", "replace"))
 
 
 @dataclass
@@ -311,15 +312,20 @@ class ClaudeAgent:
         return args + list(self.extra_args)
 
     def run(self, cwd, prompt: str, add_dirs=(), transcript=None) -> AgentResult:
-        """With `transcript` (a file path), the call streams every event of its session into that file as it
-        happens, so even a call killed at the timeout leaves its whole record; the result is read from the stream's
-        final result event, which carries the fields the plain JSON output does."""
+        """With `transcript` (a new file's path), the file's first line is the call itself (model, prompt, appended
+        system prompt: no stream event repeats them), and every event of the session is streamed after it as it
+        happens, so even a call killed at the timeout leaves its whole record. The result is read from the stream's
+        final result event, which carries the fields the plain JSON output does; stderr, if any, is kept beside the
+        file. An existing file is never overwritten (FileExistsError)."""
         t0 = time.time()
         kw = {}
-        if transcript is not None:
-            Path(transcript).parent.mkdir(parents=True, exist_ok=True)
-            kw["stdout_path"] = str(transcript)
         tpath = str(transcript) if transcript is not None else None
+        if tpath:
+            Path(tpath).parent.mkdir(parents=True, exist_ok=True)
+            with open(tpath, "x") as fh:
+                fh.write(json.dumps({"type": "drsi_call", "model": self.model, "prompt": prompt,
+                                     "system": self.append_system_prompt, "cwd": str(cwd)}) + "\n")
+            kw["stdout_path"] = tpath
         try:
             proc = self.runner(self.build_args(add_dirs, stream=transcript is not None), input=prompt,
                                capture_output=True, text=True, timeout=self.timeout, cwd=str(cwd), sweep=[str(cwd)],
@@ -331,10 +337,14 @@ class ClaudeAgent:
                                error=f"agent timed out after {self.timeout}s{where}")
         secs = time.time() - t0
         if tpath:
-            env = _stream_result(proc.stdout)
+            if (proc.stderr or "").strip():
+                Path(tpath).with_name(Path(tpath).stem + ".stderr.txt").write_text(proc.stderr)
+            env = _stream_result(tpath)
             if env is None:
+                tail = f"; stderr: {proc.stderr.strip()[-300:]}" if (proc.stderr or "").strip() else ""
                 return AgentResult(ok=False, secs=secs, transcript=tpath,
-                                   error=f"exit {proc.returncode}; no result in the stream; {_stream_summary(tpath)}")
+                                   error=f"exit {proc.returncode}; no result in the stream; {_stream_summary(tpath)}"
+                                         f"{tail}")
         else:
             try:
                 env = json.loads(proc.stdout)
@@ -349,36 +359,55 @@ class ClaudeAgent:
                            session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath)
 
 
-def _stream_events(text: str) -> list[dict]:
-    out = []
-    for line in (text or "").splitlines():
-        try:
-            e = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(e, dict):
-            out.append(e)
-    return out
+def _lines(path):
+    """The file's lines one at a time (a transcript can be larger than memory should hold)."""
+    with open(path, errors="replace") as fh:
+        yield from fh
 
 
-def _stream_result(text: str) -> dict | None:
-    """The stream's final result event (the one Claude Code writes when the session ends)."""
-    return next((e for e in reversed(_stream_events(text)) if e.get("type") == "result"), None)
+def _json(line: str) -> dict | None:
+    try:
+        e = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return e if isinstance(e, dict) else None
+
+
+def _is_type(line: str, kind: str) -> bool:
+    return f'"type":"{kind}"' in line or f'"type": "{kind}"' in line
+
+
+def _stream_result(path) -> dict | None:
+    """The stream's last whole result event (the one Claude Code writes when the session ends)."""
+    found = None
+    for line in _lines(path):
+        if _is_type(line, "result"):
+            e = _json(line)
+            if e is not None and e.get("type") == "result":
+                found = e
+    return found
 
 
 def _stream_summary(path) -> str:
-    """One line on a transcript: where it is, how many events it holds, the last event and the last rate-limit
+    """One line on a transcript: where it is, how many stream events it holds, its last event and the last usage
     status the call saw, so an error says where the call stood without opening the file."""
+    n, last, rate = 0, None, None
     try:
-        events = _stream_events(Path(path).read_text(errors="replace"))
+        for line in _lines(path):
+            if not line.strip() or _is_type(line, "drsi_call"):
+                continue
+            n += 1
+            last = line
+            if _is_type(line, "rate_limit_event"):
+                rate = line
     except OSError:
         return f"transcript {path} (unreadable)"
-    parts = [f"transcript {path}: {len(events)} events"]
-    if events:
-        last = events[-1]
-        parts.append(f"last {last.get('type')}" + (f"/{last['subtype']}" if last.get("subtype") else ""))
-    rate = next((e.get("rate_limit_info") or {} for e in reversed(events) if e.get("type") == "rate_limit_event"), None)
-    if rate is not None:
-        parts.append(f"rate limit {rate.get('status')} ({rate.get('rateLimitType')}, "
-                     f"utilization {rate.get('utilization')})")
+    parts = [f"transcript {path}: {n} events"]
+    e = _json(last) if last else None
+    if e is not None:
+        parts.append(f"last {e.get('type')}" + (f"/{e['subtype']}" if e.get("subtype") else ""))
+    info = ((_json(rate) or {}).get("rate_limit_info") or {}) if rate else None
+    if info is not None:
+        parts.append(f"last usage status {info.get('status')} ({info.get('rateLimitType')} at "
+                     f"{info.get('utilization')})")
     return ", ".join(parts)

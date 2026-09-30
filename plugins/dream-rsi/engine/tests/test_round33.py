@@ -42,7 +42,8 @@ class StreamRunner:
                  sweep=None, stdout_path=None):
         self.calls.append({"args": args, "stdout_path": stdout_path})
         if stdout_path is not None:
-            Path(stdout_path).write_text(self.stdout)
+            with open(stdout_path, "a") as fh:
+                fh.write(self.stdout)
         if self.raise_timeout:
             raise subprocess.TimeoutExpired(args, timeout)
         return subprocess.CompletedProcess(args, self.rc, stdout=self.stdout, stderr="")
@@ -105,7 +106,7 @@ class AgentTranscriptTest(unittest.TestCase):
         self.assertIn("timed out after 7s", res.error)
         self.assertIn(str(self.path), res.error)
         self.assertIn("3 events", res.error)
-        self.assertIn("allowed_warning", res.error)  # the last rate-limit status the call saw
+        self.assertIn("allowed_warning", res.error)  # the last usage status the call saw
         self.assertEqual(res.transcript, str(self.path))
 
 
@@ -124,7 +125,7 @@ class RunGroupStdoutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "out.jsonl"
             proc = run_group([sys.executable, "-c", "print('hello')"], timeout=30, stdout_path=out)
-            self.assertEqual(proc.stdout, "hello\n")
+            self.assertEqual(proc.stdout, "")  # round 34: the file holds it; nothing is read back into memory
             self.assertEqual(out.read_text(), "hello\n")
 
 
