@@ -92,10 +92,26 @@ def load_worlds(pool) -> list[dict]:
     return out
 
 
+def as_recorded(world: dict) -> bool:
+    """True when every attempt's cell is exactly what a live round records: a root opened in a root:<n> slot, one slot
+    each, and every other attempt opened from its parent. A world without cells cannot say which child was opened
+    from which leaf; a prune re-parents an attempt but keeps its cell (which names the removed attempt), so replay
+    cannot reach it and the world's best drops to what is left."""
+    from .question import slot_of
+    slots = set()
+    for n in world["nodes"]:
+        cell, parent = n.get("cell"), n.get("parent")
+        if parent is None:
+            j = slot_of(cell)
+            if j is None or j in slots:
+                return False
+            slots.add(j)
+        elif cell is None or str(cell) != str(parent):
+            return False
+    return True
+
+
 def comparable(worlds: list[dict]) -> list[dict]:
-    """The worlds a dream may compare policies on: rounds recorded live whose every attempt keeps its cell (the root
-    slot or the attempt it was opened from). Without cells a world cannot say which child was opened from which leaf,
-    and an attempt a prune re-parented reads as a continuation live never ran. The history world (imported ledger
-    rows, some scored by the classifier's outcome) was never a live round."""
-    return [w for w in worlds if w.get("live", True) and w["nodes"]
-            and all(n.get("cell") is not None for n in w["nodes"])]
+    """The worlds a dream may compare policies on: rounds recorded live (not the history world, imported ledger rows
+    some scored by the classifier's outcome) that are as live recorded them (as_recorded)."""
+    return [w for w in worlds if w.get("live", True) and w["nodes"] and as_recorded(w)]

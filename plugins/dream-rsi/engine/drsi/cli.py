@@ -69,9 +69,12 @@ def worker_agent(camp: Campaign, workspace, system: str, model: str | None = Non
 
 
 def _transcript_path(folder: Path) -> Path:
-    """A new transcript file in folder, named by the UTC time of the call so a folder's calls sort in order."""
+    """A new transcript file in folder, named by the UTC time of the call (so a folder's calls sort in order) and a
+    random suffix (two calls in one microsecond still get a file each)."""
+    import uuid
     now = time.time()
-    return folder / (time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + f"{int(now * 1e6) % 1_000_000:06d}Z.jsonl")
+    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + f"{int(now * 1e6) % 1_000_000:06d}Z"
+    return folder / f"{stamp}-{uuid.uuid4().hex[:8]}.jsonl"
 
 
 def make_worker(camp: Campaign):

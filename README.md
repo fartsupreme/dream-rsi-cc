@@ -230,9 +230,10 @@ expect a campaign's first rounds to find its loopholes.
   - Reaching good attempts sooner scores higher even when every run explores the whole world.
   - Worlds without a single valid reachable score can't favour any policy.
 - **Deploying a revision:** replay is exact only where the record answers. Policies are compared on the rounds
-  recorded live whose every attempt keeps its cell (without cells a world cannot say which child was opened from
-  which leaf, and an attempt a prune re-parented would read as a continuation live never ran; older worlds get
-  their cells from the tree), and among those, on the worlds where the incumbent's replay stays on the record
+  recorded live whose cells are exactly what live records: each root in a `root:<n>` slot of its own and every other
+  attempt opened from its parent (without cells a world cannot say which child was opened from which leaf, and a
+  prune re-parents an attempt but keeps its cell, so replay cannot reach it and the world's best drops; older worlds
+  get their cells from the tree), and among those, on the worlds where the incumbent's replay stays on the record
   (every round it recorded itself, and any other whose record covers its whole path): there its value is exact, and a candidate's run, which ends at its first probe past the
   record, can only score below what it does live on the same attempts, so a candidate that wins there does better
   live on them. On a world the incumbent leaves, its own replay would be cut short and any candidate resembling the
@@ -294,12 +295,14 @@ expect a campaign's first rounds to find its loopholes.
   first, so a fixed assignment would always give the last model the least promising cell. One model proposes and
   builds an attempt, every attempt records its model, and so does each frozen world.
 - **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
-  session to `logs/workers/<attempt>/<UTC time>.jsonl` or `logs/developer/<UTC time>.jsonl` in the campaign. The first
+  session to `logs/workers/<attempt>/<UTC time>-<random>.jsonl` or `logs/developer/<UTC time>-<random>.jsonl` in the
+  campaign. The first
   line is the call itself (model, prompt, the brief appended to the system prompt); after it, Claude Code's
   `stream-json` events as they happen: each message, tool call and result, usage events and the final result. A
   call killed at `live.timeout_s` keeps everything up to the kill, and its recorded error names the transcript, its
   last event and the last usage status it saw; anything the call wrote to stderr is kept beside it
-  (`<time>.stderr.txt`). Files are streamed, never read back whole, and never overwritten. An attempt's
+  (`<name>.stderr.txt`). Files are streamed, never read back whole, and never overwritten. A call succeeds only if
+  its stream ends as Claude Code ends a session: exactly one result event, as the last line. An attempt's
   `worker.transcript` is its last call's. Prunes leave transcripts in place (they are how a failed worker is
   diagnosed), and they are kept until you delete them.
 - **What counts as a pass:** a live attempt's outcome is `pass` when its score beats its parent's (or, for a new

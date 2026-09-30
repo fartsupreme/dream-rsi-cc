@@ -61,10 +61,12 @@ class TranscriptFileTest(unittest.TestCase):
         self.assertTrue(res.ok, res)
         self.assertEqual(res.structured, {"a": 1})
 
-    def test_a_torn_last_line_falls_back_to_the_last_whole_result(self):
+    def test_a_torn_line_after_the_result_is_a_failure(self):
+        # round 35: Claude Code ends a session with exactly one result as its last line; anything after it (a torn
+        # line here) is not what Claude Code wrote, so the call fails rather than falling back to an earlier result
         res = self.agent(FileOnlyRunner(stream(RESULT) + '{"type": "result", "subtype": "succ')).run(
             "/tmp/ws", "p", transcript=self.path)
-        self.assertTrue(res.ok, res)
+        self.assertFalse(res.ok, res)
 
     def test_the_first_line_is_the_call_itself(self):
         self.agent(FileOnlyRunner(stream(RESULT))).run("/tmp/ws", "do the thing", transcript=self.path)
