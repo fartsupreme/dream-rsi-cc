@@ -38,36 +38,12 @@ import uuid
 
 POLL_S = 0.3
 QUEUE_S = 3900  # time allowed on top of a request's own limit (shipping it, waiting for a free slot there)
+STILL_RUNNING = 75  # --wait's status when its time is up and the run goes on
+WAIT_S = 540  # --wait's default: inside the worker shell's 10-minute limit
 
 
-def _client(argv: list[str]) -> int:
-    import argparse
-    ap = argparse.ArgumentParser(prog="offload", description="run a command on the campaign's compute host")
-    ap.add_argument("--mem", type=int, default=None, help="memory limit, GB")
-    ap.add_argument("--secs", type=int, default=None, help="time limit, seconds")
-    ap.add_argument("command", nargs=argparse.REMAINDER)
-    a = ap.parse_args(argv)
-    cmd = a.command[1:] if a.command[:1] == ["--"] else a.command
-    d, ws = os.environ.get("DRSI_OFFLOAD_DIR"), os.environ.get("DRSI_OFFLOAD_WORKSPACE")
-    if not d or not ws:
-        print("offload: not configured for this campaign (no DRSI_OFFLOAD_DIR)", file=sys.stderr)
-        return 2
-    if not cmd:
-        print("offload: give a command after --", file=sys.stderr)
-        return 2
-    rid = uuid.uuid4().hex[:12]
-    req = {"argv": cmd, "cwd": os.path.relpath(os.path.realpath(os.getcwd()), os.path.realpath(ws)),
-           "mem_gb": a.mem, "secs": a.secs}
-    os.makedirs(d, exist_ok=True)
-    # held until this process ends (the descriptor is never closed): a run whose helper is gone is stopped
-    lock = os.open(os.path.join(d, rid + ".lock"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    tmp = os.path.join(d, rid + ".req.tmp")
-    with open(tmp, "w") as fh:
-        json.dump(req, fh)
-    os.replace(tmp, os.path.join(d, rid + ".req.json"))
-    out_path, done_path = os.path.join(d, rid + ".out"), os.path.join(d, rid + ".done")
-    print(f"offload: request {rid}; its output is also in {out_path}", file=sys.stderr, flush=True)
+def _follow(out_path: str, done_path: str, deadline: float | None = None) -> int | None:
+    """Print a request's output from the start as it arrives; its exit status when it ends, None at the deadline."""
     pos = 0
     out = sys.stdout.buffer
 
@@ -95,7 +71,56 @@ def _client(argv: list[str]) -> int:
             if status.get("error") and not status.get("told"):
                 print(f"offload: {status['error']}", file=sys.stderr)
             return int(status.get("exit", 1))
+        if deadline is not None and time.monotonic() > deadline:
+            return None
         time.sleep(POLL_S)
+
+
+def _client(argv: list[str]) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="offload", description="run a command on the campaign's compute host")
+    ap.add_argument("--mem", type=int, default=None, help="memory limit, GB")
+    ap.add_argument("--secs", type=int, default=None, help="time limit, seconds")
+    ap.add_argument("--wait", metavar="ID", default=None,
+                    help="attach to the running request ID: print its output, exit with its status when it ends")
+    ap.add_argument("--for", dest="for_s", type=int, default=WAIT_S, metavar="S",
+                    help=f"with --wait, return after S seconds if the run goes on (status {STILL_RUNNING})")
+    ap.add_argument("command", nargs=argparse.REMAINDER)
+    a = ap.parse_args(argv)
+    cmd = a.command[1:] if a.command[:1] == ["--"] else a.command
+    d, ws = os.environ.get("DRSI_OFFLOAD_DIR"), os.environ.get("DRSI_OFFLOAD_WORKSPACE")
+    if not d or not ws:
+        print("offload: not configured for this campaign (no DRSI_OFFLOAD_DIR)", file=sys.stderr)
+        return 2
+    if a.wait is not None:
+        rid = a.wait
+        base = os.path.join(d, rid)
+        if not _RID.fullmatch(rid) or not (os.path.exists(base + ".req.json") or os.path.exists(base + ".done")):
+            print(f"offload: no request {rid} here (a run ends with the session that asked for it)", file=sys.stderr)
+            return 2
+        code = _follow(base + ".out", base + ".done", time.monotonic() + max(1, a.for_s))
+        if code is None:
+            print(f"offload: the run is still going; wait again with --wait {rid}", file=sys.stderr)
+            return STILL_RUNNING
+        return code
+    if not cmd:
+        print("offload: give a command after --", file=sys.stderr)
+        return 2
+    rid = uuid.uuid4().hex[:12]
+    req = {"argv": cmd, "cwd": os.path.relpath(os.path.realpath(os.getcwd()), os.path.realpath(ws)),
+           "mem_gb": a.mem, "secs": a.secs}
+    os.makedirs(d, exist_ok=True)
+    # held until this process ends (the descriptor is never closed): a run whose helper is gone is stopped
+    lock = os.open(os.path.join(d, rid + ".lock"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    tmp = os.path.join(d, rid + ".req.tmp")
+    with open(tmp, "w") as fh:
+        json.dump(req, fh)
+    os.replace(tmp, os.path.join(d, rid + ".req.json"))
+    out_path, done_path = os.path.join(d, rid + ".out"), os.path.join(d, rid + ".done")
+    print(f"offload: request {rid}; its output is also in {out_path}; wait for it from another command with "
+          f"--wait {rid}", file=sys.stderr, flush=True)
+    return _follow(out_path, done_path)
 
 
 # -- the orchestrator's half -------------------------------------------------------------------------------------------
@@ -172,10 +197,13 @@ def brief(camp) -> list[str]:
              f"checkout, `{sys.executable} {os.path.abspath(__file__)} [--mem GB] [--secs S] -- <command> [args]` "
              f"(defaults {mem} GB and {secs} s, at most {max_mem} GB and {max_secs} s). It ships your checkout there, runs the command in the same "
              "directory, streams its output back and exits with its status; files it writes there do not come back. "
-             "A command that runs past your shell's time limit (2 minutes unless you ask for more, 10 at most) is "
-             "moved to the background or stopped: for a longer run, start the helper in the background yourself and "
-             "read the output file it names when it starts. A run stops when its helper ends, and when your session "
-             "ends."]
+             "Your session has no later turn: when you stop, it ends, and every run still going is stopped, so wait "
+             "for a run you need before you finish. A command that runs past your shell's time limit (2 minutes "
+             "unless you ask for more, 10 at most) is moved to the background or stopped: start a longer run in the "
+             "background (the helper names its request ID when it starts), then wait for it in the foreground with "
+             f"`{sys.executable} {os.path.abspath(__file__)} --wait ID`, which prints the run's output and exits with "
+             f"its status when it ends, or after {WAIT_S // 60} minutes with status {STILL_RUNNING} while it goes on "
+             "(then wait again). A run also stops when the helper that started it ends."]
     if off.get("note"):
         lines.append(str(off["note"]))
     return lines + [""]

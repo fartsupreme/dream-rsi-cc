@@ -30,6 +30,18 @@ _REGISTRY = None  # a guardian.Registry while `drsi run` runs: every child group
 _STOPPING = threading.Event()  # set while a run shuts down: a child started now is killed at once
 PS_TIMEOUT = 30
 LSOF_TIMEOUT = 60
+# Claude Code's auto memory loads a project's MEMORY.md into every session and lets the file tools write notes beside
+# it, outside the Bash sandbox: a channel between calls the orchestrator neither sees nor checks. Every call runs
+# with it off.
+NO_MEMORY = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+
+
+def call_env(extra: dict | None = None) -> dict:
+    """The environment of every Claude call: this process's, the call's own settings, and auto memory off."""
+    env = dict(os.environ)
+    env.update({k: str(v) for k, v in (extra or {}).items()})
+    env.update(NO_MEMORY)
+    return env
 
 
 def attach_registry(registry) -> None:
@@ -420,7 +432,7 @@ class ClaudeAgent:
         try:
             proc = self.runner(self.build_args(add_dirs, stream=transcript is not None), input=prompt,
                                capture_output=True, text=True, timeout=self.timeout, cwd=str(cwd), sweep=[str(cwd)],
-                               env=dict(os.environ, **{k: str(v) for k, v in self.env.items()}) if self.env else None,
+                               env=call_env(self.env),
                                **kw)
         except subprocess.TimeoutExpired as e:
             where = f"; {_stream_summary(tpath)}{_stderr_tail(epath)}" if tpath else ""

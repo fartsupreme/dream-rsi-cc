@@ -103,6 +103,14 @@ expect a campaign's first rounds to find its loopholes.
   proposal directory (nothing under the clone's `.git`), have no network unless `live.allowed_domains` lists hosts, and run with hooks off and no
   user or project settings. They never run drsi themselves. A worker's score comes only from the scorer,
   never from its report.
+- **No Claude Code memory.** Claude Code's auto memory loads a project's `MEMORY.md` into every session and lets
+  the file tools write notes beside it, outside the Bash sandbox; workers of one campaign share a project (their
+  checkouts are worktrees of one clone), so it would be a channel between them that the orchestrator neither sees
+  nor checks. Every call the engine makes (workers, the policy developer, the classifier and the judge) runs with
+  it off (`autoMemoryEnabled: false` where the call takes settings, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` always), and
+  a worker's file tools are denied `~/.claude` (a session may write its own memory folder even with auto memory
+  off). Notes a campaign's workers left before 0.4.3 stay in `~/.claude/projects/<its repo>/memory/` and are no
+  longer read.
 - **Heavy runs elsewhere (`live.offload`) never open the worker's sandbox.** A worker asks for a run by writing a
   request file into its own proposal directory; the orchestrator, outside the sandbox, checks it (an argument list,
   a directory inside the checkout, limits within the configured maximum) and runs the one configured command with
@@ -328,8 +336,10 @@ expect a campaign's first rounds to find its loopholes.
   [ARGS...]` from its checkout: the orchestrator runs `PATH CHECKOUT MEM_GB SECONDS DIR -- COMMAND [ARGS...]` (DIR
   relative to the checkout) while the worker's call lasts, and the helper streams its output and exits with its
   status. `PATH` is the campaign's, an absolute path outside the workers' checkouts (it runs with the checkout as its
-  directory): ship the checkout to a compute host and run the command there in a sandbox with those limits, say. The helper names the file its output also goes to, so a worker can start a long run in the
-  background and read it there. A run is stopped when its helper ends or the worker's call does, and when it ends on
+  directory): ship the checkout to a compute host and run the command there in a sandbox with those limits, say. A headless session has no later turn (when a worker stops, its session
+  ends and its runs are stopped), so the brief tells workers to wait for what they need: a run longer than the shell's
+  command limit (10 minutes at most) starts in the background, and `offload.py --wait ID` attaches to it, printing its
+  output and exiting with its status, or returning after `--for` seconds (default 540) with status 75 while it goes on. A run is stopped when its helper ends or the worker's call does, and when it ends on
   its own its process group goes with it: the group and the processes the tracker saw it start are killed (one that
   detaches before the tracker's first look, every 0.5 s, and leaves the checkout escapes, as for workers), and a
   command that starts work on another machine must stop that work when it is killed. What a run writes stays where it
