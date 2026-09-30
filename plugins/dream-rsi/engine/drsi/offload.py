@@ -161,7 +161,12 @@ class _Server:
                     if rid in self.seen or (self.d / f"{rid}.done").exists():
                         continue
                     self.seen.add(rid)
-                    self._handle(rid, p)
+                    try:
+                        self._handle(rid, p)
+                    except Exception as e:  # noqa: BLE001 - the command could not start, say: end the request
+                        self.log(f"offload {rid}: {type(e).__name__}: {e}")
+                        if not (self.d / f"{rid}.done").exists():
+                            self._finish(rid, 1, f"could not run the request: {type(e).__name__}: {e}")
                     if self.stop_event.is_set():
                         break
             except Exception as e:  # noqa: BLE001 - a bad request never stops the serving
