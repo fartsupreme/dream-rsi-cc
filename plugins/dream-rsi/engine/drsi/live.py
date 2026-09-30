@@ -154,6 +154,7 @@ class LiveRunner:
         self.round_id, self.checker = round_id, checker
         self.log = log or (lambda msg: None)
         cfg = camp.config
+        offload.check(cfg)  # bad live.offload or live.worker_mem_gb settings stop the run here, at its start
         self.ws = workspaces or Workspaces(camp.root, cfg["workspace"]["repo"], cfg["workspace"].get("base"),
                                            ignore=cfg["workspace"].get("ignore"))
         self.ws.ensure_clone()
@@ -171,6 +172,7 @@ class LiveRunner:
         self._batches = 0  # model slots rotate by one each batch, so no model always gets the last-ranked cell
         self.ids: list[str] = []
         self._last_call: dict[str, AgentResult] = {}
+        self._mem_kills: dict[str, list] = {}  # an attempt's memory-cap kills, across all its calls
         self.shown_family: dict[str, str | None] = {}  # the family each attempt was shown with at its reveal
         self._seq = 0
         self._git_lock = threading.Lock()
@@ -309,6 +311,7 @@ class LiveRunner:
             res = AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
         if nid is not None:
             self._last_call[nid] = res  # an attempt that fails later still names its last call's transcript
+            self._mem_kills.setdefault(nid, []).extend(getattr(res, "mem_kills", None) or [])
         return res
 
     def _read_proposal(self, node_id: str, res: AgentResult) -> str:
@@ -428,9 +431,11 @@ class LiveRunner:
     def _worker_record(self, nid: str, res: AgentResult | None) -> dict:
         """What the attempt records of its worker: the last call's session, time and transcript (logs/workers/<id>/
         holds every call's), and the model."""
-        return {"session": getattr(res, "session_id", None), "secs": round(getattr(res, "secs", 0.0) or 0.0, 1),
-                "model": self._models.get(nid) or self.default_model, "transcript": getattr(res, "transcript", None),
-                "mem_kills": list(getattr(res, "mem_kills", None) or [])}
+        rec = {"session": getattr(res, "session_id", None), "secs": round(getattr(res, "secs", 0.0) or 0.0, 1),
+               "model": self._models.get(nid) or self.default_model, "transcript": getattr(res, "transcript", None)}
+        if self._mem_kills.get(nid):  # the processes the memory cap killed in any of the attempt's calls
+            rec["mem_kills"] = list(self._mem_kills[nid])
+        return rec
 
     def _setup_failed(self, cell, nid, parent_id, parent_commit, error: Exception) -> dict:
         """A cell whose workspace could not be made is recorded as an orchestration failure under its parent,

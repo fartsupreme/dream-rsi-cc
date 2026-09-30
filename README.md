@@ -110,7 +110,10 @@ expect a campaign's first rounds to find its loopholes.
   reaches every file there through a handle on a directory it made itself for the call (a link left in its place is
   removed, not followed, and requests an earlier call left are not run), reads a request only from a plain file with
   one link, creates the output file anew, puts the status file in place by a rename, and never repeats a request's
-  values back. What the configured command runs, and where, is the campaign's to contain.
+  values back. A request runs only while the helper that made it holds its lock, and a directory flooded with
+  entries is no longer served. The checkout and the directory the command is given are the worker's to write, so
+  the configured command must treat them as such (follow no links there, pass them to no shell unquoted); what it
+  runs, and where, is the campaign's to contain.
 - **Novelty checks are the orchestrator's, not the worker's.** Each live attempt goes: propose; the
   orchestrator checks the proposal against everything tried; implement. A duplicate or an off-target variant goes
   back with the judge's reasons, up to `live.max_proposals` tries, and is recorded as `not_novel` if it never passes.
@@ -323,11 +326,17 @@ expect a campaign's first rounds to find its loopholes.
   anything more than a quick check with `python3 <engine>/drsi/offload.py [--mem GB] [--secs S] -- COMMAND
   [ARGS...]` from its checkout: the orchestrator runs `PATH CHECKOUT MEM_GB SECONDS DIR -- COMMAND [ARGS...]` (DIR
   relative to the checkout) while the worker's call lasts, and the helper streams its output and exits with its
-  status. `PATH` is the campaign's: ship the checkout to a compute host and run the command there in a sandbox with
-  those limits, say. Runs end with the worker's call, and what they write stays where they ran.
+  status. `PATH` is the campaign's, an absolute path outside the workers' checkouts (it runs with the checkout as its
+  directory): ship the checkout to a compute host and run the command there in a sandbox with those limits, say. The helper names the file its output also goes to, so a worker can start a long run in the
+  background and read it there. A run is stopped when its helper ends or the worker's call does: the command's
+  process group and every process it started are killed, and a command that starts work on another machine must stop
+  that work when it is killed. What a run writes stays where it ran. Bad settings stop `drsi run` when a round starts.
 - **Workers' memory:** `live.worker_mem_gb` caps what a worker's processes on the loop's machine hold together:
-  while their resident total is over it, the largest is killed (never the worker's Claude Code process itself), the
-  worker is told the cap, and the attempt records each kill in `worker.mem_kills`. It is a guard, not a place for
+  while their total is over it, the largest is killed (never the worker's Claude Code process itself). On macOS a
+  process counts its physical footprint (resident, compressed and swapped-out pages; the resident size alone reads
+  low exactly when memory is short), elsewhere its resident size. The worker is told the cap, and the attempt records
+  each kill, from any of its calls, in `worker.mem_kills`. A process that detaches before the tracker's first look
+  (every 0.5 s) escapes the cap; the cleanup at the end of the call still finds it while it works in the checkout. It is a guard, not a place for
   heavy work: with `live.offload` set, a worker has somewhere to run what the cap stops.
 - **What counts as a pass:** a live attempt's outcome is `pass` when its score beats its parent's (or, for a new
   branch, the baseline) by more than `live.pass_margin` (default 0). Set it to about twice the scorer's
