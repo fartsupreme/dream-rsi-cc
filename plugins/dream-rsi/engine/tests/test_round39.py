@@ -147,7 +147,7 @@ exit "${EXIT_WITH:-3}"
 """
 
 
-class OffloadTest(unittest.TestCase):
+class _OffloadBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -169,6 +169,8 @@ class OffloadTest(unittest.TestCase):
         return subprocess.run([sys.executable, str(CLIENT), *args], cwd=cwd or self.ws / "sub", env=self.env,
                               capture_output=True, text=True, timeout=timeout)
 
+
+class OffloadTest(_OffloadBase):
     def test_a_request_runs_the_configured_command_and_streams_back(self):
         with offload.serve(self.camp, self.ws, "iter0001-001"):
             out = self.client("--mem", "12", "--", "python3", "probe.py", "--p", "2^35")
@@ -279,6 +281,93 @@ class OffloadTest(unittest.TestCase):
         live_round(base.camp, base.policy, r)
         self.assertTrue(outputs)
         self.assertTrue(all(o.returncode == 3 and "remote says hello" in o.stdout for o in outputs))
+
+
+class HardeningTest(_OffloadBase):
+    """The orchestrator serves requests outside the worker's sandbox, in a directory the worker can write: nothing a
+    worker plants there may make it write anywhere else, read another file, or stall."""
+
+    def setUp(self):
+        super().setUp()
+        self.d = offload.request_dir(self.camp, "iter0001-001")
+        self.outside = Path(self.tmp.name) / "outside.txt"
+        self.outside.write_text("untouched\n")
+
+    def wait_done(self, *rids, timeout=20):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not all((self.d / f"{r}.done").exists() for r in rids):
+            time.sleep(0.2)
+        return {r: json.loads((self.d / f"{r}.done").read_text()) for r in rids}
+
+    def test_a_planted_output_link_is_not_followed(self):
+        with offload.serve(self.camp, self.ws, "iter0001-001"):
+            (self.d / "r1.out").symlink_to(self.outside)
+            (self.d / "r1.req.json").write_text(json.dumps({"argv": ["x"], "cwd": "."}))
+            done = self.wait_done("r1")
+        self.assertEqual(self.outside.read_text(), "untouched\n")
+        self.assertNotEqual(done["r1"]["exit"], 0)
+        self.assertFalse((self.fake.parent / "called.txt").exists())
+
+    def test_a_linked_request_is_not_read(self):
+        runnable = json.dumps({"argv": ["x"], "cwd": "."})  # a request that would run, were it read through a link
+        by_symlink, by_hard_link = Path(self.tmp.name) / "one.json", Path(self.tmp.name) / "two.json"
+        by_symlink.write_text(runnable)
+        by_hard_link.write_text(runnable)
+        with offload.serve(self.camp, self.ws, "iter0001-001"):
+            (self.d / "s1.req.json").symlink_to(by_symlink)  # its target has one link: only not following stops it
+            os.link(by_hard_link, self.d / "s2.req.json")
+            done = self.wait_done("s1", "s2")
+        for r in ("s1", "s2"):
+            self.assertEqual(done[r]["exit"], 2, r)
+        self.assertFalse((self.fake.parent / "called.txt").exists())
+
+    def test_a_refusal_repeats_no_value_from_the_request(self):
+        with offload.serve(self.camp, self.ws, "iter0001-001"):
+            (self.d / "s3.req.json").write_text(json.dumps({"argv": ["x"], "cwd": ".", "mem_gb": "SECRET-VALUE"}))
+            done = self.wait_done("s3")
+        self.assertEqual(done["s3"]["exit"], 2)
+        self.assertNotIn("SECRET-VALUE", json.dumps(done["s3"]) + (self.d / "s3.out").read_text())
+
+    def test_a_fifo_does_not_stall_the_server(self):
+        with offload.serve(self.camp, self.ws, "iter0001-001"):
+            os.mkfifo(self.d / "0.req.json")
+            try:
+                out = self.client("--", "true", timeout=20)
+            finally:  # a server stuck opening the pipe is let go, so the test fails rather than hangs
+                try:
+                    os.close(os.open(self.d / "0.req.json", os.O_WRONLY | os.O_NONBLOCK))
+                except OSError:
+                    pass
+        self.assertEqual(out.returncode, 3)
+
+    def test_a_directory_link_left_in_its_place_is_not_followed(self):
+        elsewhere = Path(self.tmp.name) / "elsewhere"
+        elsewhere.mkdir()
+        self.d.parent.mkdir(parents=True, exist_ok=True)
+        self.d.symlink_to(elsewhere)
+        with offload.serve(self.camp, self.ws, "iter0001-001"):
+            out = self.client("--", "true")
+        self.assertEqual(out.returncode, 3)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.assertFalse(self.d.is_symlink())
+
+    def test_a_directory_swapped_out_mid_call_is_not_written_through(self):
+        elsewhere = Path(self.tmp.name) / "elsewhere"
+        elsewhere.mkdir()
+        with offload.serve(self.camp, self.ws, "iter0001-001"):
+            self.d.rename(self.d.parent / "moved")
+            self.d.symlink_to(elsewhere)
+            (elsewhere / "w1.req.json").write_text(json.dumps({"argv": ["x"], "cwd": "."}))
+            time.sleep(1.5)
+        self.assertEqual(sorted(p.name for p in elsewhere.iterdir()), ["w1.req.json"])
+        self.assertFalse((self.fake.parent / "called.txt").exists())
+
+    def test_a_request_an_earlier_call_left_is_not_run(self):
+        self.d.mkdir(parents=True)
+        (self.d / "old.req.json").write_text(json.dumps({"argv": ["x"], "cwd": "."}))
+        with offload.serve(self.camp, self.ws, "iter0001-001"):
+            time.sleep(1.5)
+        self.assertFalse((self.fake.parent / "called.txt").exists())
 
 
 if __name__ == "__main__":

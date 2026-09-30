@@ -106,7 +106,11 @@ expect a campaign's first rounds to find its loopholes.
 - **Heavy runs elsewhere (`live.offload`) never open the worker's sandbox.** A worker asks for a run by writing a
   request file into its own proposal directory; the orchestrator, outside the sandbox, checks it (an argument list,
   a directory inside the checkout, limits within the configured maximum) and runs the one configured command with
-  it, never a shell. What that command runs, and where, is the campaign's to contain.
+  it, never a shell. The directory is the worker's to write and the orchestrator is outside the sandbox, so it
+  reaches every file there through a handle on a directory it made itself for the call (a link left in its place is
+  removed, not followed, and requests an earlier call left are not run), reads a request only from a plain file with
+  one link, creates the output file anew, puts the status file in place by a rename, and never repeats a request's
+  values back. What the configured command runs, and where, is the campaign's to contain.
 - **Novelty checks are the orchestrator's, not the worker's.** Each live attempt goes: propose; the
   orchestrator checks the proposal against everything tried; implement. A duplicate or an off-target variant goes
   back with the judge's reasons, up to `live.max_proposals` tries, and is recorded as `not_novel` if it never passes.
