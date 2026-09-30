@@ -19,6 +19,8 @@ explores until nothing is legal still ends.
 """
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field
 
 
@@ -60,6 +62,13 @@ class CellMeta:
 
 
 ROOT = "root:"
+_SLOT = re.compile(r"root:(0|[1-9][0-9]*)")
+
+
+def slot_of(cell) -> int | None:
+    """The root slot a cell names, as live writes it ("root:" and a plain decimal number), or None."""
+    m = _SLOT.fullmatch(cell) if isinstance(cell, str) else None
+    return int(m.group(1)) if m else None
 
 
 class QuestionBase:
@@ -273,9 +282,9 @@ class ReplayQuestion(QuestionBase):
         # re-rooted) was opened from no slot live, so no slot reaches it.
         slots: dict[int, str] = {}
         for r in self._roots:
-            c = self._rec[r].get("cell")
-            if isinstance(c, str) and c.startswith(ROOT) and c[len(ROOT):].isdigit():
-                slots.setdefault(int(c[len(ROOT):]), r)
+            j = slot_of(self._rec[r].get("cell"))
+            if j is not None:
+                slots.setdefault(j, r)
         self._has_cells = any(self._rec[n].get("cell") is not None for n in self._rec)
         self._slot = slots if self._has_cells else dict(enumerate(self._roots))
         self._off = 0  # probes past the record (evaluator-side: where replay stops being what happened)

@@ -339,12 +339,11 @@ class ClaudeAgent:
         if tpath:
             if (proc.stderr or "").strip():
                 Path(tpath).with_name(Path(tpath).stem + ".stderr.txt").write_text(proc.stderr)
-            env = _stream_result(tpath)
+            env, why = _stream_result(tpath)
             if env is None:
                 tail = f"; stderr: {proc.stderr.strip()[-300:]}" if (proc.stderr or "").strip() else ""
                 return AgentResult(ok=False, secs=secs, transcript=tpath,
-                                   error=f"exit {proc.returncode}; no result in the stream; {_stream_summary(tpath)}"
-                                         f"{tail}")
+                                   error=f"exit {proc.returncode}; {why}; {_stream_summary(tpath)}{tail}")
         else:
             try:
                 env = json.loads(proc.stdout)
@@ -373,40 +372,47 @@ def _json(line: str) -> dict | None:
     return e if isinstance(e, dict) else None
 
 
-def _is_type(line: str, kind: str) -> bool:
-    return f'"type":"{kind}"' in line or f'"type": "{kind}"' in line
-
-
-def _stream_result(path) -> dict | None:
-    """The stream's last whole result event (the one Claude Code writes when the session ends)."""
-    found = None
+def _stream_result(path) -> tuple[dict | None, str]:
+    """The session's result: Claude Code ends a session with exactly one result event, as its last line. Any other
+    shape (none, more than one, or anything after it) is not a stream Claude Code finished, and gives (None, why)."""
+    found, results, after = None, 0, False
     for line in _lines(path):
-        if _is_type(line, "result"):
-            e = _json(line)
-            if e is not None and e.get("type") == "result":
-                found = e
-    return found
+        if not line.strip():
+            continue
+        ev = _json(line)
+        if ev is not None and ev.get("type") == "result":
+            found, results, after = ev, results + 1, False
+        elif found is not None:
+            after = True  # a line (whole or torn) after the result
+    if results == 0:
+        return None, "no result in the stream"
+    if results > 1:
+        return None, f"{results} result events in the stream (a session ends with one)"
+    if after:
+        return None, "the stream goes on after its result"
+    return found, ""
 
 
 def _stream_summary(path) -> str:
     """One line on a transcript: where it is, how many stream events it holds, its last event and the last usage
     status the call saw, so an error says where the call stood without opening the file."""
-    n, last, rate = 0, None, None
+    n, e, rate = 0, None, None
     try:
         for line in _lines(path):
-            if not line.strip() or _is_type(line, "drsi_call"):
+            if not line.strip():
                 continue
-            n += 1
-            last = line
-            if _is_type(line, "rate_limit_event"):
-                rate = line
+            ev = _json(line)
+            if ev is not None and ev.get("type") == "drsi_call":
+                continue
+            n, e = n + 1, ev
+            if ev is not None and ev.get("type") == "rate_limit_event":
+                rate = ev
     except OSError:
         return f"transcript {path} (unreadable)"
     parts = [f"transcript {path}: {n} events"]
-    e = _json(last) if last else None
     if e is not None:
         parts.append(f"last {e.get('type')}" + (f"/{e['subtype']}" if e.get("subtype") else ""))
-    info = ((_json(rate) or {}).get("rate_limit_info") or {}) if rate else None
+    info = (rate.get("rate_limit_info") or {}) if rate else None
     if info is not None:
         parts.append(f"last usage status {info.get('status')} ({info.get('rateLimitType')} at "
                      f"{info.get('utilization')})")
