@@ -15,8 +15,10 @@ import json
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
+from drsi import live
 from drsi.agent import AgentResult, ClaudeAgent
 from drsi.live import LiveRunner
 from drsi.question import ROOT
@@ -64,7 +66,12 @@ class SignalTest(unittest.TestCase):
 
 
 class RecordTest(unittest.TestCase):
-    setUp = r10.WorkerModelsTest.setUp
+    def setUp(self):
+        r10.WorkerModelsTest.setUp(self)
+        # round 49: a refusal no model can cover waits for the reset; these tests stop the run during that wait
+        stop = mock.patch.object(live, "wait_unless_stopping", return_value=False)
+        stop.start()
+        self.addCleanup(stop.stop)
     tearDown = r10.WorkerModelsTest.tearDown
     campaign = r10.WorkerModelsTest.campaign
 

@@ -30,8 +30,9 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
-from .agent import (AgentResult, kill_all_children, refuse_if_stopping, register_child, unregister_child,
-                    wait_unless_stopping)
+from .agent import (LIMIT_MIN_WAIT_S, LIMIT_POLL_S, AgentResult, kill_all_children, limit_wait, refuse_if_stopping,
+                    register_child, unregister_child, wait_unless_stopping)
+from .llm import LLMLimited
 from .dream import SEED_POLICY, run_dream
 from .families import load_families
 from .guard import check_policy_source, safe_builtins
@@ -91,22 +92,7 @@ def _read_regular(path: Path, cap: int) -> str:
         return fh.read(cap).decode("utf-8", "replace")
 
 
-ACCOUNT_LIMITS = ("five_hour", "seven_day")  # the account's own windows, which bind every model alike
-LIMIT_POLL_S = 600  # a wait for the account's limit checks again at least this often (an account switch ends it)
-LIMIT_MIN_WAIT_S = 30
-
-
-def _account_wide(res: AgentResult) -> bool:
-    return getattr(res, "limit_type", None) in ACCOUNT_LIMITS
-
-
-def _limit_wait(res: AgentResult) -> int:
-    """Seconds to wait before trying a call the account's limit refused: until its reset (and a few seconds more),
-    at least LIMIT_MIN_WAIT_S and at most LIMIT_POLL_S."""
-    reset = getattr(res, "limit_reset", None)
-    if not reset:
-        return LIMIT_POLL_S
-    return int(min(LIMIT_POLL_S, max(LIMIT_MIN_WAIT_S, reset - time.time() + 5)))
+_limit_wait = limit_wait  # the wait for calls refused for usage limits (agent.limit_wait)
 
 
 def _clear(path: Path) -> None:
@@ -335,20 +321,26 @@ class LiveRunner:
             return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
 
     def _call(self, path, system, nid: str | None = None) -> AgentResult:
-        """One worker call of an attempt. Refused for a usage limit before the model ran, it runs on the fallback;
-        refused for one of the account's own limits, which bind every model, it waits for the reset and is made
-        again (its own model first), so a limit costs time, not attempts. A run that begins stopping ends the wait."""
+        """One worker call of an attempt. A call refused for a usage limit before the model ran is never a failed
+        attempt: it runs on llm.worker_fallback when that can, and when no model the attempt may use can run (no
+        fallback, the same model, or the fallback refused as well) the attempt waits for the earliest reset among the
+        refusals, whatever their kind, and the call is made again, its own model first. A refusal's kind cannot say
+        which models it binds (Claude Code reports the exceeded window that resets last), so none is trusted to. A
+        run that begins stopping ends the wait."""
         kills: list = []
         while True:
-            res, part, blocked = self._try_call(path, system, nid)
+            res, part, refusals = self._try_call(path, system, nid)
             kills += part
-            if not blocked:
+            if not refusals:
                 break
-            secs = _limit_wait(res)
+            secs = limit_wait(*refusals)
+            kinds = ", ".join(sorted({str(getattr(r, "limit_type", None) or "unnamed") for r in refusals}))
             until = time.strftime("%H:%M", time.gmtime(time.time() + secs))
-            self.log(f"{nid}: every model it may use is at the account's usage limit ({res.limit_type}); waiting "
-                     f"until {until} UTC, then trying again")
+            self.log(f"{nid}: no model it may use can run ({kinds} usage limit); waiting until {until} UTC, then "
+                     "trying again")
             if not wait_unless_stopping(secs):
+                if len(refusals) > 1:  # stopped while the fallback was refused as well: the record names it
+                    self._fallback_refused[nid] = self.worker_fallback
                 break
             self._limit_waits[nid] = self._limit_waits.get(nid, 0.0) + secs
         if nid is not None:
@@ -356,35 +348,44 @@ class LiveRunner:
             self._mem_kills.setdefault(nid, []).extend(kills)
         return res
 
-    def _try_call(self, path, system, nid: str | None) -> tuple[AgentResult, list, bool]:
-        """(the call's result, the memory-cap kills of every call made, whether the account's limit blocked it)."""
+    def _try_call(self, path, system, nid: str | None) -> tuple[AgentResult, list, tuple]:
+        """(the call's result, the memory-cap kills of every call made, the refusals when no model could run)."""
         model = self._models.get(nid)
         res = self._run_worker(path, system, model)
         kills = list(getattr(res, "mem_kills", None) or [])
         if nid is None or res.ok or not getattr(res, "limited", False):
-            return res, kills, False
+            return res, kills, ()
         current = model or self.default_model
+        if not self.worker_fallback or self.worker_fallback == current:
+            return res, kills, (res,)
+        # refused before the model ran (so nothing it did needs undoing): this call, and the rest of the attempt, run
+        # on the fallback. The next attempt tries its own model again, so the model comes back when its limit resets
+        # or the account changes.
         phase = "propose" if PROPOSE in system else "implement"
-        if self.worker_fallback and self.worker_fallback != current:
-            # refused for its model's usage limit before the model ran (so nothing it did needs undoing): this call,
-            # and the rest of the attempt, run on the fallback. The next attempt tries its own model again, so the
-            # model comes back when its limit resets or the account changes.
-            self.log(f"{nid}: {current} refused for its usage limit; the attempt continues on {self.worker_fallback}")
-            if phase == "propose":
-                _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
-            retry = self._run_worker(path, system, self.worker_fallback)
-            kills += getattr(retry, "mem_kills", None) or []
-            if retry.ok or not getattr(retry, "limited", False):
-                self._fell_back[nid] = (current, phase)
-                self._models[nid] = self.worker_fallback
-                return retry, kills, False
-            if _account_wide(retry):  # every model is refused: wait, then the attempt's own model goes first
-                return retry, kills, True
-            # refused too, for a limit of its own: no model did this attempt's work, so it keeps its own model and
-            # its own call's session, transcript and error, and names the refused fallback
-            self._fallback_refused[nid] = self.worker_fallback
-            return res, kills, False
-        return res, kills, _account_wide(res)
+        self.log(f"{nid}: {current} refused for its usage limit; the attempt continues on {self.worker_fallback}")
+        if phase == "propose":
+            _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
+        retry = self._run_worker(path, system, self.worker_fallback)
+        kills += getattr(retry, "mem_kills", None) or []
+        if retry.ok or not getattr(retry, "limited", False):
+            self._fell_back[nid] = (current, phase)
+            self._models[nid] = self.worker_fallback
+            return retry, kills, ()
+        # refused as well: the attempt keeps its own model and its own call's session, transcript and error
+        return res, kills, (res, retry)
+
+    def _check(self, proposal: str, nid: str) -> dict:
+        """The novelty check, waiting while its calls are refused for a usage limit (a refused check is no verdict)."""
+        while True:
+            try:
+                return self.checker(proposal, nid)
+            except LLMLimited:
+                until = time.strftime("%H:%M", time.gmtime(time.time() + LIMIT_POLL_S))
+                self.log(f"{nid}: the novelty check was refused for a usage limit; waiting until {until} UTC, then "
+                         "checking again")
+                if not wait_unless_stopping(LIMIT_POLL_S):
+                    raise
+                self._limit_waits[nid] = self._limit_waits.get(nid, 0.0) + LIMIT_POLL_S
 
     def _read_proposal(self, node_id: str, res: AgentResult) -> str:
         text = _read_regular(self.proposal_file(node_id), 256_000)
@@ -416,7 +417,7 @@ class LiveRunner:
                         return self._finish(job, res if not res.ok else AgentResult(
                             ok=False, error="the worker wrote no proposal", session_id=res.session_id, secs=res.secs,
                             transcript=getattr(res, "transcript", None)), None, checks, no_commit=start)
-                    check = self.checker(proposal, nid)
+                    check = self._check(proposal, nid)
                     checks.append({k: check.get(k) for k in ("verdict", "ticket", "rule", "family", "rationale")})
                     if check["verdict"] not in ("duplicate", "off_target"):
                         break

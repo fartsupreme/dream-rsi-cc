@@ -134,6 +134,9 @@ def make_developer(camp: Campaign):
 def make_indexer(camp: Campaign):
     def index(ids):
         cfg = camp.config
+        from .prune import did_no_work
+        tree = camp.tree
+        ids = [i for i in ids if i in tree and not did_no_work(tree.get(i))]  # a refusal's text is no mechanism
         if not ids:
             return
         llm = make_llm(cfg)
