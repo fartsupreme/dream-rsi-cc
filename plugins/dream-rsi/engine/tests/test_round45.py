@@ -31,6 +31,8 @@ class Runner:
 
     def __call__(self, args, stdout_path=None, stderr_path=None, **kw):
         out = json.dumps(self.event) + "\n"
+        if stdout_path is not None and self.event is LIMIT:  # a real refusal's stream (round 46) says rejected first
+            out = json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}}) + "\n" + out
         if stdout_path is not None:
             with open(stdout_path, "a") as fh:
                 fh.write(out)

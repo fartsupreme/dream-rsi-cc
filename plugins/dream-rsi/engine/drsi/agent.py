@@ -377,7 +377,7 @@ class AgentResult:
     error: str = ""
     transcript: str | None = None  # the call's stream-json transcript, when it was given one
     mem_kills: list | None = None  # processes of the call killed over the memory cap: {pid, gb, total_gb, command}
-    limited: bool = False  # refused for the model's usage limit (an error result with api_error_status 429)
+    limited: bool = False  # refused for the model's usage limit before the model ran (see _refused_up_front)
 
 
 class ClaudeAgent:
@@ -465,7 +465,30 @@ class ClaudeAgent:
             err += f"; transcript {tpath}"
         return AgentResult(ok=ok, result_text=str(env.get("result") or ""), structured=env.get("structured_output"),
                            session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath, mem_kills=kills,
-                           limited=not ok and env.get("api_error_status") == 429)
+                           limited=not ok and _refused_up_front(env, tpath))
+
+
+def _refused_up_front(env: dict, tpath) -> bool:
+    """A call refused for its model's usage limit before the model ran: its result shows no turn of work (one turn, no
+    API time, no model usage) and the stream's last usage event says rejected (without a stream, a 429 says so). A
+    limit crossed after work, or a short-term rate limit that Claude Code retried, is not this: its result shows the
+    work, or its usage status is not rejected."""
+    ran = (env.get("num_turns") or 0) > 1 or (env.get("duration_api_ms") or 0) > 0 or bool(env.get("modelUsage"))
+    if ran:
+        return False
+    if tpath:
+        return _last_usage_status(tpath) == "rejected"
+    return env.get("api_error_status") == 429
+
+
+def _last_usage_status(path) -> str | None:
+    status = None
+    for line in _lines(path):
+        if "rate_limit_event" in line:
+            ev = _json(line)
+            if ev is not None and ev.get("type") == "rate_limit_event":
+                status = (ev.get("rate_limit_info") or {}).get("status")
+    return status
 
 
 def _lines(path):

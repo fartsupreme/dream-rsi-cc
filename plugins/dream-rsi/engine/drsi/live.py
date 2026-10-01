@@ -167,7 +167,8 @@ class LiveRunner:
         if fallback is not None and (not isinstance(fallback, str) or not fallback.strip()):
             raise ValueError(f"llm.worker_fallback must be a model name, not {fallback!r}")
         self.worker_fallback = fallback  # a call refused for its model's usage limit is made again on this model
-        self._fell_back: dict[str, str] = {}  # attempt id -> the model it fell back from
+        self._fell_back: dict[str, tuple[str, str]] = {}  # attempt id -> (the model it fell back from, the phase)
+        self._fallback_refused: dict[str, str] = {}  # attempt id -> a fallback that was refused as well
         objective = cfg["live"].get("objective")
         if objective is not None and (not isinstance(objective, str) or not objective.strip()):
             raise ValueError(f"live.objective must be text saying what the workspace scores, not {objective!r}")
@@ -319,12 +320,21 @@ class LiveRunner:
         current = model or self.default_model
         if (nid is not None and not res.ok and getattr(res, "limited", False) and self.worker_fallback
                 and self.worker_fallback != current):
-            # its model's usage limit is reached: this call, and the rest of the attempt, run on the fallback (the next
-            # attempt tries its own model again, so the model comes back when its limit resets or the account changes)
+            # refused for its model's usage limit before the model ran (so nothing it did needs undoing): this call,
+            # and the rest of the attempt, run on the fallback. The next attempt tries its own model again, so the
+            # model comes back when its limit resets or the account changes.
+            phase = "propose" if PROPOSE in system else "implement"
             self.log(f"{nid}: {current} refused for its usage limit; the attempt continues on {self.worker_fallback}")
-            self._fell_back[nid] = current
-            self._models[nid] = self.worker_fallback
-            res = self._run_worker(path, system, self.worker_fallback)
+            self._mem_kills.setdefault(nid, []).extend(getattr(res, "mem_kills", None) or [])  # the refused call's
+            if phase == "propose":
+                _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
+            retry = self._run_worker(path, system, self.worker_fallback)
+            if not retry.ok and getattr(retry, "limited", False):  # refused too: no model did this attempt's work
+                self._fallback_refused[nid] = self.worker_fallback
+            else:
+                self._fell_back[nid] = (current, phase)
+                self._models[nid] = self.worker_fallback
+            res = retry
         if nid is not None:
             self._last_call[nid] = res  # an attempt that fails later still names its last call's transcript
             self._mem_kills.setdefault(nid, []).extend(getattr(res, "mem_kills", None) or [])
@@ -449,8 +459,10 @@ class LiveRunner:
         holds every call's), and the model."""
         rec = {"session": getattr(res, "session_id", None), "secs": round(getattr(res, "secs", 0.0) or 0.0, 1),
                "model": self._models.get(nid) or self.default_model, "transcript": getattr(res, "transcript", None)}
-        if nid in self._fell_back:  # the model the attempt was given, refused for its usage limit
-            rec["fell_back_from"] = self._fell_back[nid]
+        if nid in self._fell_back:  # the model the attempt was given, refused for its usage limit, and where
+            rec["fell_back_from"], rec["fell_back_in"] = self._fell_back[nid]
+        if nid in self._fallback_refused:
+            rec["fallback_refused"] = self._fallback_refused[nid]
         if self._mem_kills.get(nid):  # the processes the memory cap killed in any of the attempt's calls
             rec["mem_kills"] = list(self._mem_kills[nid])
         return rec
