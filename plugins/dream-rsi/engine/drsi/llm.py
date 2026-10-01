@@ -34,7 +34,7 @@ class ClaudeCLI:
 
     def build_args(self, schema: dict) -> list[str]:
         args = [self.binary, "-p", "--model", self.model, "--output-format", "json",
-                "--no-session-persistence", "--setting-sources", "project,local",
+                "--no-session-persistence", "--setting-sources", "",
                 "--strict-mcp-config", "--tools", self.tools,
                 "--json-schema", json.dumps(schema)]
         if self.system_prompt:

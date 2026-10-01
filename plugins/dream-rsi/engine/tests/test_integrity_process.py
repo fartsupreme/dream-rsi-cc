@@ -90,7 +90,7 @@ class IsolationTest(unittest.TestCase):
                          sorted([str(ws), str(camp.root / "work" / "_proposals" / "iter0001-001")]))
         self.assertNotIn("excludedCommands", sb)  # workers never run drsi; nothing leaves the sandbox
         self.assertTrue(settings["disableAllHooks"])
-        self.assertEqual(args[args.index("--setting-sources") + 1], "local")
+        self.assertEqual(args[args.index("--setting-sources") + 1], "")  # round 43: no settings source
 
     def test_policy_developer_is_confined_to_its_sandbox(self):
         camp = Campaign.create("d", {})

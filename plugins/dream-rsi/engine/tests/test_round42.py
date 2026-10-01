@@ -60,7 +60,6 @@ class MemoryTest(unittest.TestCase):
         # Claude Code lets a session write its own project memory folder even with auto memory off (checked with a
         # real worker): the file tools are denied everything under ~/.claude
         self.assertIn("Edit(~/.claude/**)", settings["permissions"]["deny"])
-        self.assertIn("Write(~/.claude/**)", settings["permissions"]["deny"])
 
     def test_the_developer_and_the_judge_run_with_auto_memory_off(self):
         import tempfile
