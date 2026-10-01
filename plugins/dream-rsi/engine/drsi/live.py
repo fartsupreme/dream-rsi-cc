@@ -163,6 +163,11 @@ class LiveRunner:
                                    or not all(isinstance(m, str) and m.strip() for m in models)):
             raise ValueError(f"llm.worker_models must be a non-empty list of model names, not {models!r}")
         self.worker_models = models  # slot i of a batch runs models[i % len(models)]; None: every worker on worker_model
+        fallback = cfg["llm"].get("worker_fallback")
+        if fallback is not None and (not isinstance(fallback, str) or not fallback.strip()):
+            raise ValueError(f"llm.worker_fallback must be a model name, not {fallback!r}")
+        self.worker_fallback = fallback  # a call refused for its model's usage limit is made again on this model
+        self._fell_back: dict[str, str] = {}  # attempt id -> the model it fell back from
         objective = cfg["live"].get("objective")
         if objective is not None and (not isinstance(objective, str) or not objective.strip()):
             raise ValueError(f"live.objective must be text saying what the workspace scores, not {objective!r}")
@@ -299,16 +304,27 @@ class LiveRunner:
         return "\n".join(parts)
 
     # -- one attempt -----------------------------------------------------------------------
-    def _call(self, path, system, nid: str | None = None) -> AgentResult:
-        model = self._models.get(nid)
+    def _run_worker(self, path, system, model: str | None) -> AgentResult:
         try:
             with offload.serve(self.camp, path, Path(path).name, log=self.log):  # the worker's heavy runs, elsewhere
                 if model:
-                    res = self.worker_fn(path, WORKER_PROMPT, system, model=model)
-                else:
-                    res = self.worker_fn(path, WORKER_PROMPT, system)
+                    return self.worker_fn(path, WORKER_PROMPT, system, model=model)
+                return self.worker_fn(path, WORKER_PROMPT, system)
         except Exception as e:  # noqa: BLE001 - a crashed worker is a recorded attempt, not a lost round
-            res = AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
+            return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
+
+    def _call(self, path, system, nid: str | None = None) -> AgentResult:
+        model = self._models.get(nid)
+        res = self._run_worker(path, system, model)
+        current = model or self.default_model
+        if (nid is not None and not res.ok and getattr(res, "limited", False) and self.worker_fallback
+                and self.worker_fallback != current):
+            # its model's usage limit is reached: this call, and the rest of the attempt, run on the fallback (the next
+            # attempt tries its own model again, so the model comes back when its limit resets or the account changes)
+            self.log(f"{nid}: {current} refused for its usage limit; the attempt continues on {self.worker_fallback}")
+            self._fell_back[nid] = current
+            self._models[nid] = self.worker_fallback
+            res = self._run_worker(path, system, self.worker_fallback)
         if nid is not None:
             self._last_call[nid] = res  # an attempt that fails later still names its last call's transcript
             self._mem_kills.setdefault(nid, []).extend(getattr(res, "mem_kills", None) or [])
@@ -433,6 +449,8 @@ class LiveRunner:
         holds every call's), and the model."""
         rec = {"session": getattr(res, "session_id", None), "secs": round(getattr(res, "secs", 0.0) or 0.0, 1),
                "model": self._models.get(nid) or self.default_model, "transcript": getattr(res, "transcript", None)}
+        if nid in self._fell_back:  # the model the attempt was given, refused for its usage limit
+            rec["fell_back_from"] = self._fell_back[nid]
         if self._mem_kills.get(nid):  # the processes the memory cap killed in any of the attempt's calls
             rec["mem_kills"] = list(self._mem_kills[nid])
         return rec
