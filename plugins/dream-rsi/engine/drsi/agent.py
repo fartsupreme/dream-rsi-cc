@@ -470,9 +470,9 @@ class ClaudeAgent:
 
 def _refused_up_front(env: dict, tpath) -> bool:
     """A call refused for its model's usage limit before the model ran: its result shows no turn of work (one turn, no
-    API time, no model usage) and the stream's last usage event says rejected (without a stream, a 429 says so). A
-    limit crossed after work, or a short-term rate limit that Claude Code retried, is not this: its result shows the
-    work, or its usage status is not rejected."""
+    API time, no model usage) and the stream's last usage event says rejected, whatever the error's status (a real
+    refusal's is 429); without a stream, a 429 says so. A limit crossed after work, or a short-term rate limit that
+    Claude Code retried, is not this: its result shows the work, or its usage status is not rejected."""
     ran = (env.get("num_turns") or 0) > 1 or (env.get("duration_api_ms") or 0) > 0 or bool(env.get("modelUsage"))
     if ran:
         return False
