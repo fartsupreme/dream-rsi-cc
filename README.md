@@ -329,7 +329,9 @@ expect a campaign's first rounds to find its loopholes.
   after a proposal on its own model, the build may be the fallback's); a fallback refused as well is not retried: the
   attempt keeps its own model and its own refused call (session, transcript, error), and names the refused fallback
   in `worker.fallback_refused`. Every attempt tries its own model first, so a model whose limit has reset, or whose
-  account has changed, is back at once. The fallback covers worker calls only (not the classifier, the judge or the
+  account has changed, is back at once. A call on the fallback that is refused in turn tries the attempt's own
+  model; if that runs, the attempt goes on there (`worker.model` then equals `fell_back_from`, and `fell_back_in`
+  names the phase the fallback took). The fallback covers worker calls only (not the classifier, the judge or the
   policy developer) and compares model names as written: give it in the same form as the workers' models
   (`worker_models`, or `worker_model` or `model` when that list is unset). Every call keeps its own transcript in the
   attempt's folder, the refused one included.

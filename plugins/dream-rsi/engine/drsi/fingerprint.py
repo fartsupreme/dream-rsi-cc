@@ -155,7 +155,8 @@ def fingerprint_nodes(tree: Tree, llm, goal: str = "", batch: int = 20, workers:
         if not fp or "error" in fp or not fp.get("mechanism"):
             return True
         return stale and fp.get("goal_sha") != gsha
-    todo = [n for n in tree.nodes() if (ids is None and needs(n)) or (ids is not None and n["id"] in ids)]
+    todo = [n for n in tree.nodes() if ((ids is None and needs(n)) or (ids is not None and n["id"] in ids))
+            and str(n.get("proposal") or "").strip()]  # no proposal, no idea to read (a refused call has none)
     read = {n["id"]: _content(n) for n in todo}
     skipped: set = set()
     batches = [todo[i:i + batch] for i in range(0, len(todo), batch)]

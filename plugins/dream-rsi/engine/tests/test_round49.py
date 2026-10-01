@@ -15,7 +15,8 @@
   failure, and its confirmation step let a duplicate verdict stand on a refused call. A check refused for a usage
   limit (ClaudeCLI recognises the refusal, exit status 1 with an error result of status 429 and no work, and does
   not retry it at once) now waits and checks again, and the checker's own fallbacks let that refusal through.
-- The indexer fingerprinted attempts that did no work, so a refusal's text could become a mechanism on the map.
+- The indexer fingerprinted attempts that did no work, so a refusal's text could become a mechanism on the map
+  (round 50 moved the rule into fingerprint_nodes).
 """
 import json
 import subprocess
@@ -195,24 +196,8 @@ class DreamTest(unittest.TestCase):
         self.assertEqual(len(waits), 1)
 
 
-class IndexTest(unittest.TestCase):
-    def test_the_indexer_skips_attempts_that_did_no_work(self):
-        from drsi import cli
-        from drsi.store import Campaign
-        with tempfile.TemporaryDirectory() as d:
-            camp = Campaign.create("i", {"workspace": {"repo": "/x", "mutable": ["a"]}}, home=Path(d))
-            from drsi.store import make_node
-            camp.tree.add(make_node(id="iter0001-001", parent=None, source="live", proposal="", valid=False,
-                                    score=None, fail_class="agent_error", artifacts={"changed": []},
-                                    text={"worker_error": "You've hit your session limit"}))
-            camp.tree.add(make_node(id="iter0001-002", parent=None, source="live", proposal="an idea", valid=True,
-                                    score=1.0, fail_class="ok", artifacts={"changed": ["a"]}))
-            seen = []
-            with mock.patch.object(cli, "fingerprint_nodes", side_effect=lambda tree, llm, ids=None, **kw:
-                                   seen.append(sorted(ids or []))), \
-                    mock.patch.object(cli, "make_llm", return_value=None), mock.patch.object(cli, "_write_map"):
-                cli.make_indexer(camp)(["iter0001-001", "iter0001-002"])
-        self.assertEqual(seen, [["iter0001-002"]])
+# The indexer's skip of attempts with no work moved into fingerprint_nodes, as a skip of attempts with no proposal
+# (round 50, whose FingerprintTest covers it).
 
 
 if __name__ == "__main__":
