@@ -329,7 +329,7 @@ class LiveRunner:
         run that begins stopping ends the wait."""
         kills: list = []
         while True:
-            res, part, refusals = self._try_call(path, system, nid)
+            res, part, refusals, other = self._try_call(path, system, nid)
             kills += part
             if not refusals:
                 break
@@ -339,8 +339,8 @@ class LiveRunner:
             self.log(f"{nid}: no model it may use can run ({kinds} usage limit); waiting until {until} UTC, then "
                      "trying again")
             if not wait_unless_stopping(secs):
-                if len(refusals) > 1:  # stopped while the fallback was refused as well: the record names it
-                    self._fallback_refused[nid] = self.worker_fallback
+                if other is not None and other == self.worker_fallback:  # stopped while the fallback was refused too
+                    self._fallback_refused[nid] = other
                 break
             self._limit_waits[nid] = self._limit_waits.get(nid, 0.0) + secs
         if nid is not None:
@@ -348,31 +348,35 @@ class LiveRunner:
             self._mem_kills.setdefault(nid, []).extend(kills)
         return res
 
-    def _try_call(self, path, system, nid: str | None) -> tuple[AgentResult, list, tuple]:
-        """(the call's result, the memory-cap kills of every call made, the refusals when no model could run)."""
+    def _try_call(self, path, system, nid: str | None) -> tuple[AgentResult, list, tuple, str | None]:
+        """(the call's result, the memory-cap kills of every call made, the refusals when no model could run, the
+        other model tried)."""
         model = self._models.get(nid)
         res = self._run_worker(path, system, model)
         kills = list(getattr(res, "mem_kills", None) or [])
         if nid is None or res.ok or not getattr(res, "limited", False):
-            return res, kills, ()
+            return res, kills, (), None
         current = model or self.default_model
-        if not self.worker_fallback or self.worker_fallback == current:
-            return res, kills, (res,)
+        own = self._fell_back[nid][0] if nid in self._fell_back else current  # the model the attempt was given
+        other = own if current != own else self.worker_fallback  # on the fallback, its own model is the other one
+        if not other or other == current:
+            return res, kills, (res,), None
         # refused before the model ran (so nothing it did needs undoing): this call, and the rest of the attempt, run
-        # on the fallback. The next attempt tries its own model again, so the model comes back when its limit resets
-        # or the account changes.
+        # on the other model. The next attempt tries its own model again, so the model comes back when its limit
+        # resets or the account changes.
         phase = "propose" if PROPOSE in system else "implement"
-        self.log(f"{nid}: {current} refused for its usage limit; the attempt continues on {self.worker_fallback}")
+        self.log(f"{nid}: {current} refused for its usage limit; the attempt continues on {other}")
         if phase == "propose":
             _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
-        retry = self._run_worker(path, system, self.worker_fallback)
+        retry = self._run_worker(path, system, other)
         kills += getattr(retry, "mem_kills", None) or []
         if retry.ok or not getattr(retry, "limited", False):
-            self._fell_back[nid] = (current, phase)
-            self._models[nid] = self.worker_fallback
-            return retry, kills, ()
-        # refused as well: the attempt keeps its own model and its own call's session, transcript and error
-        return res, kills, (res, retry)
+            if other != own:
+                self._fell_back[nid] = (current, phase)
+            self._models[nid] = other  # back on its own model, the record keeps where the fallback took over
+            return retry, kills, (), None
+        # refused as well: the attempt keeps its current model and this call's session, transcript and error
+        return res, kills, (res, retry), other
 
     def _check(self, proposal: str, nid: str) -> dict:
         """The novelty check, waiting while its calls are refused for a usage limit (a refused check is no verdict)."""

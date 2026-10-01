@@ -120,7 +120,7 @@ def assign_families(tree: Tree, families: dict, llm, batch: int = 100, workers: 
     updates: dict[str, dict] = {}
     askable = []
     for n in nodes:
-        if "error" not in n["fingerprint"]:  # an unclassified attempt waits for its fingerprint, not F00
+        if "error" not in n["fingerprint"] and n["fingerprint"].get("mechanism"):  # unread: waits, not F00
             askable.append(n)
     taxo = _taxonomy_block(families)
 

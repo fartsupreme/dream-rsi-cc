@@ -88,5 +88,7 @@ class ClaudeCLI:
         except LLMError as first:
             try:
                 return self._once(prompt, schema)
+            except LLMLimited:
+                raise  # a limit that began between the two tries
             except LLMError as second:
                 raise LLMError(f"two attempts failed: {first} | {second}") from second
