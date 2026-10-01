@@ -9,6 +9,8 @@
   model's own limit (Fable's, say) is still the fallback's to cover, and fails the attempt as before when there is
   no fallback or it is refused for a limit of its own.
 - An attempt whose call failed recorded the failure's text as its proposal, and the map listed it as one.
+- `drsi prune --dry-run` reported "frozen worlds removed 0, rewritten 0" for rounds whose worlds held nothing but
+  the attempts it would remove: the dry run returned before the world step. It now reports what the run would do.
 - Workers gave the helper they started in the background the shell's timeout, and a background command is stopped
   at its timeout, and its run with it (checked with a real call); others gave the command a path on this machine,
   which the compute host does not have. The brief says both.
@@ -187,6 +189,24 @@ class BriefTest(unittest.TestCase):
         self.assertIn("no timeout", text)
         self.assertIn("stopped at its timeout", text)
         self.assertIn("does not exist there", text)
+
+
+
+class PruneDryRunTest(unittest.TestCase):
+    """The dry run reports the worlds the run removes and rewrites (round 18's fixture)."""
+
+    def test_a_dry_run_reports_the_worlds_the_run_changes(self):
+        from drsi.prune import prune
+        from tests.test_round18 import PruneTest
+        case = PruneTest("test_a_dry_run_changes_nothing")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        case.fixture()
+        dry = prune(case.camp, error_match="account unavailable", dry_run=True, log=lambda m: None)
+        real = prune(case.camp, error_match="account unavailable", log=lambda m: None)
+        self.assertTrue(real["worlds_removed"] or real["worlds_rewritten"])
+        self.assertEqual(sorted(dry["worlds_removed"]), sorted(real["worlds_removed"]))
+        self.assertEqual(sorted(dry["worlds_rewritten"]), sorted(real["worlds_rewritten"]))
 
 
 if __name__ == "__main__":
