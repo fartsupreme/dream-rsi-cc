@@ -45,6 +45,15 @@ def make_llm(cfg: dict, role: str = "classifier"):
     return ClaudeCLI(model=model, system_prompt=CLASSIFIER_SYSTEM)
 
 
+def _config_dir_rules() -> list[str]:
+    rules = ["Edit(~/.claude/**)", "Read(~/.claude/**)"]
+    moved = os.environ.get("CLAUDE_CONFIG_DIR")
+    if moved:  # "//" starts an absolute path in a permission rule
+        real = os.path.realpath(os.path.expanduser(moved))
+        rules += [f"Edit(/{real}/**)", f"Read(/{real}/**)"]
+    return rules
+
+
 def worker_agent(camp: Campaign, workspace, system: str, model: str | None = None) -> ClaudeAgent:
     """A headless worker confined by Claude Code's Bash sandbox: it can write only its own worktree and
     proposal directory, has no network unless live.allowed_domains names hosts, runs no hooks, and loads
@@ -57,9 +66,10 @@ def worker_agent(camp: Campaign, workspace, system: str, model: str | None = Non
     settings = {
         "disableAllHooks": True,
         "autoMemoryEnabled": False,  # no notes shared between workers behind the map (agent.NO_MEMORY does it too)
-        # Claude Code lets a session's file tools write its own project memory folder under ~/.claude even with
-        # auto memory off; nothing a worker does belongs there
-        "permissions": {"deny": ["Edit(~/.claude/**)"]},  # an Edit rule covers every file-editing tool
+        # Claude Code lets a session's file tools write its own project memory folder even with auto memory off,
+        # wherever its config directory is, and Bash can read every session's notes and transcripts there: a worker
+        # neither writes nor reads it (an Edit rule covers every file-editing tool; the sandbox applies both to Bash)
+        "permissions": {"deny": _config_dir_rules()},
         "sandbox": {
             "enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
             # nothing under the clone's .git: git metadata is the orchestrator's (read-only git works)

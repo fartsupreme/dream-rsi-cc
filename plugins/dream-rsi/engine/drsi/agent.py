@@ -32,8 +32,9 @@ PS_TIMEOUT = 30
 LSOF_TIMEOUT = 60
 # Claude Code's auto memory loads a project's MEMORY.md into every session and lets the file tools write notes beside
 # it, outside the Bash sandbox: a channel between calls the orchestrator neither sees nor checks. Every call runs
-# with it off.
-NO_MEMORY = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+# with it off, and with CLAUDE.md files off as well (beside loading no settings source, which already keeps a
+# CLAUDE.local.md a worker leaves in its checkout from a continuation of it).
+NO_MEMORY = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}
 
 
 def call_env(extra: dict | None = None) -> dict:

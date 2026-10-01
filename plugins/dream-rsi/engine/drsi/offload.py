@@ -42,6 +42,17 @@ STILL_RUNNING = 75  # --wait's status when its time is up and the run goes on
 WAIT_S = 540  # --wait's default: inside the worker shell's 10-minute limit
 
 
+def _running(d: str) -> list[str]:
+    """The requests in the directory that have not ended, oldest first."""
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    ids = [n[:-len(".req.json")] for n in names if n.endswith(".req.json")]
+    live = [i for i in ids if not os.path.exists(os.path.join(d, i + ".done"))]
+    return sorted(live, key=lambda i: os.path.getmtime(os.path.join(d, i + ".req.json")))
+
+
 def _follow(out_path: str, done_path: str, deadline: float | None = None) -> int | None:
     """Print a request's output from the start as it arrives; its exit status when it ends, None at the deadline."""
     pos = 0
@@ -81,8 +92,9 @@ def _client(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="offload", description="run a command on the campaign's compute host")
     ap.add_argument("--mem", type=int, default=None, help="memory limit, GB")
     ap.add_argument("--secs", type=int, default=None, help="time limit, seconds")
-    ap.add_argument("--wait", metavar="ID", default=None,
-                    help="attach to the running request ID: print its output, exit with its status when it ends")
+    ap.add_argument("--wait", metavar="ID", nargs="?", const="", default=None,
+                    help="attach to a running request (with no ID, the only one): print its output, exit with its "
+                         "status when it ends")
     ap.add_argument("--for", dest="for_s", type=int, default=WAIT_S, metavar="S",
                     help=f"with --wait, return after S seconds if the run goes on (status {STILL_RUNNING})")
     ap.add_argument("command", nargs=argparse.REMAINDER)
@@ -93,10 +105,22 @@ def _client(argv: list[str]) -> int:
         print("offload: not configured for this campaign (no DRSI_OFFLOAD_DIR)", file=sys.stderr)
         return 2
     if a.wait is not None:
+        if cmd:
+            print("offload: give either a command to run or --wait, not both", file=sys.stderr)
+            return 2
+        running = _running(d)
         rid = a.wait
+        if not rid:
+            if len(running) != 1:
+                print("offload: " + ("no request is running" if not running else
+                                     f"{len(running)} requests are running ({', '.join(running)}): wait for one with "
+                                     "--wait ID"), file=sys.stderr)
+                return 2
+            rid = running[0]
         base = os.path.join(d, rid)
         if not _RID.fullmatch(rid) or not (os.path.exists(base + ".req.json") or os.path.exists(base + ".done")):
-            print(f"offload: no request {rid} here (a run ends with the session that asked for it)", file=sys.stderr)
+            print(f"offload: no request {rid} (a request ID is the 12 characters the helper prints first, not the "
+                  f"shell's task ID); running now: {', '.join(running) or 'none'}", file=sys.stderr)
             return 2
         code = _follow(base + ".out", base + ".done", time.monotonic() + max(1, a.for_s))
         if code is None:
@@ -200,10 +224,12 @@ def brief(camp) -> list[str]:
              "Your session has no later turn: when you stop, it ends, and every run still going is stopped, so wait "
              "for a run you need before you finish. A command that runs past your shell's time limit (2 minutes "
              "unless you ask for more, 10 at most) is moved to the background or stopped: start a longer run in the "
-             "background (the helper names its request ID when it starts), then wait for it in the foreground with "
-             f"`{sys.executable} {os.path.abspath(__file__)} --wait ID`, which prints the run's output and exits with "
-             f"its status when it ends, or after {WAIT_S // 60} minutes prints `offload: the run is still going` (then "
-             "wait again). A run also stops when the helper that started it ends."]
+             "background, then wait for it in the foreground, giving the Bash tool its 10-minute timeout "
+             f"(600000 ms): `{sys.executable} {os.path.abspath(__file__)} --wait` with no ID attaches to your one "
+             "running request (with several, give `--wait ID`, the 12-character request ID the helper prints first, "
+             "not the shell's task ID), prints the run's output and exits with its status when it ends, or after "
+             f"{WAIT_S // 60} minutes prints `offload: the run is still going` (then wait again). A run also stops "
+             "when the helper that started it ends."]
     if off.get("note"):
         lines.append(str(off["note"]))
     return lines + [""]
