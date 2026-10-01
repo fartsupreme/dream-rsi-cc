@@ -37,9 +37,11 @@ NO_MEMORY = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
 
 
 def call_env(extra: dict | None = None) -> dict:
-    """The environment of every Claude call: this process's, the call's own settings, and auto memory off."""
+    """The environment of every Claude call: this process's, the call's own settings, and auto memory off; never the
+    switch that makes an added directory's CLAUDE.md load (a worker's proposal directory is one)."""
     env = dict(os.environ)
     env.update({k: str(v) for k, v in (extra or {}).items()})
+    env.pop("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", None)
     env.update(NO_MEMORY)
     return env
 
@@ -381,7 +383,7 @@ class ClaudeAgent:
                  allowed_tools: list[str] | None = None, append_system_prompt: str | None = None,
                  json_schema: dict | None = None, binary: str = "claude", runner=run_group,
                  timeout: int = 6 * 3600, extra_args: tuple = (), env: dict | None = None,
-                 settings: dict | None = None, setting_sources: str = "project,local", mem_cap_gb: float | None = None):
+                 settings: dict | None = None, setting_sources: str = "", mem_cap_gb: float | None = None):
         self.model, self.tools, self.permission_mode = model, tools, permission_mode
         self.allowed_tools = allowed_tools or []
         self.append_system_prompt = append_system_prompt

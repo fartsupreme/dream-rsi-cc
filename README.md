@@ -101,13 +101,15 @@ expect a campaign's first rounds to find its loopholes.
 
 - **Workers** run headless in Claude Code's Bash sandbox. They can write only to their own worktree and
   proposal directory (nothing under the clone's `.git`), have no network unless `live.allowed_domains` lists hosts, and run with hooks off and no
-  user or project settings. They never run drsi themselves. A worker's score comes only from the scorer,
+  settings source at all (`--setting-sources ""`: no user, project or local settings, and no CLAUDE.md or
+  CLAUDE.local.md, which a worker could otherwise leave in its checkout for a continuation of it to load); what they
+  need comes in `--settings` and the call's flags. They never run drsi themselves. A worker's score comes only from the scorer,
   never from its report.
 - **No Claude Code memory.** Claude Code's auto memory loads a project's `MEMORY.md` into every session and lets
   the file tools write notes beside it, outside the Bash sandbox; workers of one campaign share a project (their
   checkouts are worktrees of one clone), so it would be a channel between them that the orchestrator neither sees
-  nor checks. Every call the engine makes (workers, the policy developer, the classifier and the judge) runs with
-  it off (`autoMemoryEnabled: false` where the call takes settings, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` always), and
+  nor checks. Every call the engine makes (workers, the policy developer, the classifier and the judge) loads no
+  settings source and runs with it off (`autoMemoryEnabled: false` where the call takes settings, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` always), and
   a worker's file tools are denied `~/.claude` (a session may write its own memory folder even with auto memory
   off). Notes a campaign's workers left before 0.4.3 stay in `~/.claude/projects/<its repo>/memory/` and are no
   longer read.
@@ -204,6 +206,9 @@ expect a campaign's first rounds to find its loopholes.
   inter-process communication; for example, the scorer profile does not block Apple Events. A candidate
   built to escape could ask another, unsandboxed program to act for it. If you expect adversarial
   attempts, run the campaign in a VM or under a separate user account.
+- **Claude Code's own temporary folder is writable.** Its sandbox lets every session write `/tmp/claude-<uid>` (where
+  it keeps background tasks' output), so a worker can write there besides its checkout and proposal directory.
+  Nothing a later worker or the orchestrator loads lives there.
 - **A process built to evade cleanup can outlive its worker or scorer.** It has to detach at once and
   leave its directory. It keeps the sandbox it started in, so it still can't write outside its own
   worktree or checkout.

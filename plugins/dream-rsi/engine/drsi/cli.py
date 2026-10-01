@@ -59,7 +59,7 @@ def worker_agent(camp: Campaign, workspace, system: str, model: str | None = Non
         "autoMemoryEnabled": False,  # no notes shared between workers behind the map (agent.NO_MEMORY does it too)
         # Claude Code lets a session's file tools write its own project memory folder under ~/.claude even with
         # auto memory off; nothing a worker does belongs there
-        "permissions": {"deny": ["Edit(~/.claude/**)", "Write(~/.claude/**)"]},
+        "permissions": {"deny": ["Edit(~/.claude/**)"]},  # an Edit rule covers every file-editing tool
         "sandbox": {
             "enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
             # nothing under the clone's .git: git metadata is the orchestrator's (read-only git works)
@@ -71,7 +71,7 @@ def worker_agent(camp: Campaign, workspace, system: str, model: str | None = Non
     return ClaudeAgent(model=model or cfg["llm"].get("worker_model") or cfg["llm"]["model"], tools=WORKER_TOOLS,
                        permission_mode=live["permission_mode"], allowed_tools=list(live.get("allowed_bash") or []),
                        append_system_prompt=system, json_schema=WORKER_REPORT_SCHEMA, timeout=live["timeout_s"],
-                       env=env or None, settings=settings, setting_sources="local",
+                       env=env or None, settings=settings, setting_sources="",
                        mem_cap_gb=live.get("worker_mem_gb") or None)
 
 

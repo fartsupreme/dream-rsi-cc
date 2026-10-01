@@ -37,7 +37,7 @@ class ClaudeCLITest(unittest.TestCase):
         self.assertEqual(args[args.index("--output-format") + 1], "json")
         self.assertEqual(args[args.index("--tools") + 1], "")
         self.assertEqual(args[args.index("--system-prompt") + 1], "be terse")
-        self.assertEqual(args[args.index("--setting-sources") + 1], "project,local")
+        self.assertEqual(args[args.index("--setting-sources") + 1], "")  # round 43: no settings source
         self.assertIn("--strict-mcp-config", args)
         self.assertIn("--no-session-persistence", args)
         self.assertEqual(json.loads(args[args.index("--json-schema") + 1]), SCHEMA)

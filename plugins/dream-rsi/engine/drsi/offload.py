@@ -202,8 +202,8 @@ def brief(camp) -> list[str]:
              "unless you ask for more, 10 at most) is moved to the background or stopped: start a longer run in the "
              "background (the helper names its request ID when it starts), then wait for it in the foreground with "
              f"`{sys.executable} {os.path.abspath(__file__)} --wait ID`, which prints the run's output and exits with "
-             f"its status when it ends, or after {WAIT_S // 60} minutes with status {STILL_RUNNING} while it goes on "
-             "(then wait again). A run also stops when the helper that started it ends."]
+             f"its status when it ends, or after {WAIT_S // 60} minutes prints `offload: the run is still going` (then "
+             "wait again). A run also stops when the helper that started it ends."]
     if off.get("note"):
         lines.append(str(off["note"]))
     return lines + [""]

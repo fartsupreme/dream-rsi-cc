@@ -33,7 +33,7 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(args[args.index("--allowedTools") + 1], "Bash(drsi check *)")
         self.assertEqual(args[args.index("--append-system-prompt") + 1], "brief")
         self.assertEqual(args[args.index("--add-dir") + 1], "/tmp/extra")
-        self.assertEqual(args[args.index("--setting-sources") + 1], "project,local")
+        self.assertEqual(args[args.index("--setting-sources") + 1], "")  # round 43: no settings source
         self.assertEqual(r.calls[0]["cwd"], "/tmp/ws")
         self.assertEqual(r.calls[0]["input"], "do the thing")
         self.assertTrue(res.ok)
