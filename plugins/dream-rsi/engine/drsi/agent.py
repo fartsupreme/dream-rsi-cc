@@ -377,6 +377,7 @@ class AgentResult:
     error: str = ""
     transcript: str | None = None  # the call's stream-json transcript, when it was given one
     mem_kills: list | None = None  # processes of the call killed over the memory cap: {pid, gb, total_gb, command}
+    limited: bool = False  # refused for the model's usage limit (an error result with api_error_status 429)
 
 
 class ClaudeAgent:
@@ -463,7 +464,8 @@ class ClaudeAgent:
         if err and tpath:
             err += f"; transcript {tpath}"
         return AgentResult(ok=ok, result_text=str(env.get("result") or ""), structured=env.get("structured_output"),
-                           session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath, mem_kills=kills)
+                           session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath, mem_kills=kills,
+                           limited=not ok and env.get("api_error_status") == 429)
 
 
 def _lines(path):

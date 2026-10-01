@@ -320,6 +320,12 @@ expect a campaign's first rounds to find its loopholes.
   `search.W = 6` runs three of each. The assignment rotates by one slot each batch: a policy lists a batch best cell
   first, so a fixed assignment would always give the last model the least promising cell. One model proposes and
   builds an attempt, every attempt records its model, and so does each frozen world.
+- **A model at its usage limit:** with `llm.worker_fallback` set to a model, a worker call refused for its model's
+  usage limit (an error result with `api_error_status` 429, which comes back within seconds) is made again on the
+  fallback, and the rest of that attempt runs on it; the attempt records the model that did the work and, in
+  `worker.fell_back_from`, the one it was given. Every attempt tries its own model first, so a model whose limit has
+  reset, or whose account has changed, is back at once. A model never falls back onto itself, and a refused fallback
+  is not retried.
 - **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
   session to `logs/workers/<attempt>/<UTC time>-<random>.jsonl` or `logs/developer/<UTC time>-<random>.jsonl` in the
   campaign. The first
