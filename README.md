@@ -326,11 +326,13 @@ expect a campaign's first rounds to find its loopholes.
   attempt runs on it. A limit crossed after work is an ordinary failure, so nothing half done is carried into a retry,
   and a short-term rate limit Claude Code retried does not count. The attempt records the model that did the rest of
   the work, the one it was given (`worker.fell_back_from`) and the phase the fallback took over (`worker.fell_back_in`:
-  after a proposal on its own model, the build may be the fallback's); a fallback refused as well is not retried, and
-  the attempt keeps its own model and records it in `worker.fallback_refused`. Every attempt tries its own model first,
-  so a model whose limit has reset, or whose account has changed, is back at once. The fallback covers worker calls
-  only (not the classifier, the judge or the policy developer), compares model names as written (give it in the
-  same form as `worker_models`), and the refused call keeps its own transcript beside the fallback's.
+  after a proposal on its own model, the build may be the fallback's); a fallback refused as well is not retried: the
+  attempt keeps its own model and its own refused call (session, transcript, error), and names the refused fallback
+  in `worker.fallback_refused`. Every attempt tries its own model first, so a model whose limit has reset, or whose
+  account has changed, is back at once. The fallback covers worker calls only (not the classifier, the judge or the
+  policy developer) and compares model names as written: give it in the same form as the workers' models
+  (`worker_models`, or `worker_model` or `model` when that list is unset). Every call keeps its own transcript in the
+  attempt's folder, the refused one included.
 - **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
   session to `logs/workers/<attempt>/<UTC time>-<random>.jsonl` or `logs/developer/<UTC time>-<random>.jsonl` in the
   campaign. The first

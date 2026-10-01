@@ -317,6 +317,7 @@ class LiveRunner:
     def _call(self, path, system, nid: str | None = None) -> AgentResult:
         model = self._models.get(nid)
         res = self._run_worker(path, system, model)
+        kills = list(getattr(res, "mem_kills", None) or [])
         current = model or self.default_model
         if (nid is not None and not res.ok and getattr(res, "limited", False) and self.worker_fallback
                 and self.worker_fallback != current):
@@ -325,19 +326,21 @@ class LiveRunner:
             # model comes back when its limit resets or the account changes.
             phase = "propose" if PROPOSE in system else "implement"
             self.log(f"{nid}: {current} refused for its usage limit; the attempt continues on {self.worker_fallback}")
-            self._mem_kills.setdefault(nid, []).extend(getattr(res, "mem_kills", None) or [])  # the refused call's
             if phase == "propose":
                 _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
             retry = self._run_worker(path, system, self.worker_fallback)
-            if not retry.ok and getattr(retry, "limited", False):  # refused too: no model did this attempt's work
+            kills += getattr(retry, "mem_kills", None) or []
+            if not retry.ok and getattr(retry, "limited", False):
+                # refused too: no model did this attempt's work, so it keeps its own model and its own call's
+                # session, transcript and error, and names the refused fallback
                 self._fallback_refused[nid] = self.worker_fallback
             else:
                 self._fell_back[nid] = (current, phase)
                 self._models[nid] = self.worker_fallback
-            res = retry
+                res = retry
         if nid is not None:
             self._last_call[nid] = res  # an attempt that fails later still names its last call's transcript
-            self._mem_kills.setdefault(nid, []).extend(getattr(res, "mem_kills", None) or [])
+            self._mem_kills.setdefault(nid, []).extend(kills)
         return res
 
     def _read_proposal(self, node_id: str, res: AgentResult) -> str:
