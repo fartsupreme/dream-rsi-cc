@@ -109,10 +109,11 @@ expect a campaign's first rounds to find its loopholes.
   the file tools write notes beside it, outside the Bash sandbox; workers of one campaign share a project (their
   checkouts are worktrees of one clone), so it would be a channel between them that the orchestrator neither sees
   nor checks. Every call the engine makes (workers, the policy developer, the classifier and the judge) loads no
-  settings source and runs with it off (`autoMemoryEnabled: false` where the call takes settings, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` always), and
-  a worker's file tools are denied `~/.claude` (a session may write its own memory folder even with auto memory
-  off). Notes a campaign's workers left before 0.4.3 stay in `~/.claude/projects/<its repo>/memory/` and are no
-  longer read.
+  settings source and runs with it off (`autoMemoryEnabled: false` where the call takes settings,
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` always), and a worker may neither write
+  nor read `~/.claude` (or `CLAUDE_CONFIG_DIR`, when set): a session may write its own memory folder even with auto
+  memory off, and every session's notes and transcripts are there. Notes a campaign's workers left before 0.4.3 stay
+  in `~/.claude/projects/<its repo>/memory/`; no call loads them and no worker can read them.
 - **Heavy runs elsewhere (`live.offload`) never open the worker's sandbox.** A worker asks for a run by writing a
   request file into its own proposal directory; the orchestrator, outside the sandbox, checks it (an argument list,
   a directory inside the checkout, limits within the configured maximum) and runs the one configured command with
@@ -343,8 +344,9 @@ expect a campaign's first rounds to find its loopholes.
   status. `PATH` is the campaign's, an absolute path outside the workers' checkouts (it runs with the checkout as its
   directory): ship the checkout to a compute host and run the command there in a sandbox with those limits, say. A headless session has no later turn (when a worker stops, its session
   ends and its runs are stopped), so the brief tells workers to wait for what they need: a run longer than the shell's
-  command limit (10 minutes at most) starts in the background, and `offload.py --wait ID` attaches to it, printing its
-  output and exiting with its status, or returning after `--for` seconds (default 540) with status 75 while it goes on. A run is stopped when its helper ends or the worker's call does, and when it ends on
+  command limit (10 minutes at most) starts in the background, and `offload.py --wait` (with no ID, the worker's one running request; else
+  `--wait ID`, the request ID the helper prints first) attaches to it, printing its output and exiting with its
+  status, or printing `offload: the run is still going` after `--for` seconds (default 540) while it goes on. A run is stopped when its helper ends or the worker's call does, and when it ends on
   its own its process group goes with it: the group and the processes the tracker saw it start are killed (one that
   detaches before the tracker's first look, every 0.5 s, and leaves the checkout escapes, as for workers), and a
   command that starts work on another machine must stop that work when it is killed. What a run writes stays where it

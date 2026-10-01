@@ -46,7 +46,9 @@ class SourcesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             camp = Campaign.create("s", {"workspace": {"repo": "/x", "mutable": ["a"]}}, home=Path(d))
             args = cli.worker_agent(camp, camp.root / "work" / "iter0001-001", "s").build_args()
-        self.assertEqual(json.loads(args[args.index("--settings") + 1])["permissions"]["deny"], ["Edit(~/.claude/**)"])
+        rules = json.loads(args[args.index("--settings") + 1])["permissions"]["deny"]
+        self.assertIn("Edit(~/.claude/**)", rules)
+        self.assertNotIn("Write(~/.claude/**)", rules)  # round 44 adds Read rules beside it
 
     def test_the_brief_keys_waiting_on_the_line_wait_prints(self):
         camp = mock.Mock(config={"live": {"offload": {"cmd": "/bin/sh"}}})
