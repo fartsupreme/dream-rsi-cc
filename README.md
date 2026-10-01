@@ -333,6 +333,14 @@ expect a campaign's first rounds to find its loopholes.
   policy developer) and compares model names as written: give it in the same form as the workers' models
   (`worker_models`, or `worker_model` or `model` when that list is unset). Every call keeps its own transcript in the
   attempt's folder, the refused one included.
+- **The account at its usage limit:** a refusal for one of the account's own limits (the stream names it
+  `five_hour` or `seven_day`; they bind every model alike) is not a failed attempt. When an attempt's call meets
+  one, from its own model or from the fallback, the attempt waits for the limit to reset, checking again at least
+  every 10 minutes (so switching the account ends the wait sooner), then makes the call again, its own model first;
+  the run log says when it will try, and the attempt records the time in `worker.waited_for_limit_s`. A run that is
+  stopped ends the wait. Without this, a limit turned every call of a round into a recorded failure within
+  seconds, and the loop ran through rounds doing no work. A model's own limit (`seven_day_overage_included`, say)
+  is still the fallback's to cover, and fails the attempt as before when there is no fallback.
 - **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
   session to `logs/workers/<attempt>/<UTC time>-<random>.jsonl` or `logs/developer/<UTC time>-<random>.jsonl` in the
   campaign. The first

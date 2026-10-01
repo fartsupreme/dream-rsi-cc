@@ -62,6 +62,11 @@ def allow_children() -> None:
     _STOPPING.clear()
 
 
+def wait_unless_stopping(secs: float) -> bool:
+    """Wait up to secs; False at once if the run begins stopping meanwhile (a waiting thread must not hold it up)."""
+    return not _STOPPING.wait(secs)
+
+
 def refuse_if_stopping() -> None:
     """Called before a child is started: none is, once the run is stopping."""
     if _STOPPING.is_set():
@@ -378,6 +383,8 @@ class AgentResult:
     transcript: str | None = None  # the call's stream-json transcript, when it was given one
     mem_kills: list | None = None  # processes of the call killed over the memory cap: {pid, gb, total_gb, command}
     limited: bool = False  # refused for the model's usage limit before the model ran (see _refused_up_front)
+    limit_type: str | None = None  # when limited: the limit's kind as the stream names it (five_hour, seven_day, ...)
+    limit_reset: int | None = None  # when limited: when it resets, in seconds since the epoch, if the stream says
 
 
 class ClaudeAgent:
@@ -463,9 +470,14 @@ class ClaudeAgent:
         err = "" if ok else f"subtype={env.get('subtype')} {str(env.get('result'))[:300]}"
         if err and tpath:
             err += f"; transcript {tpath}"
+        limited = not ok and _refused_up_front(env, tpath)
+        info = (_last_usage_info(tpath) or {}) if limited and tpath else {}
+        reset = info.get("resetsAt")
         return AgentResult(ok=ok, result_text=str(env.get("result") or ""), structured=env.get("structured_output"),
                            session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath, mem_kills=kills,
-                           limited=not ok and _refused_up_front(env, tpath))
+                           limited=limited, limit_type=info.get("rateLimitType"),
+                           limit_reset=int(reset) if isinstance(reset, (int, float)) and not isinstance(reset, bool)
+                           else None)
 
 
 def _refused_up_front(env: dict, tpath) -> bool:
@@ -481,14 +493,19 @@ def _refused_up_front(env: dict, tpath) -> bool:
     return env.get("api_error_status") == 429
 
 
-def _last_usage_status(path) -> str | None:
-    status = None
+def _last_usage_info(path) -> dict | None:
+    """The stream's last rate_limit_event's info (status, rateLimitType, resetsAt, ...), or None."""
+    info = None
     for line in _lines(path):
         if "rate_limit_event" in line:
             ev = _json(line)
-            if ev is not None and ev.get("type") == "rate_limit_event":
-                status = (ev.get("rate_limit_info") or {}).get("status")
-    return status
+            if ev is not None and ev.get("type") == "rate_limit_event" and isinstance(ev.get("rate_limit_info"), dict):
+                info = ev["rate_limit_info"]
+    return info
+
+
+def _last_usage_status(path) -> str | None:
+    return (_last_usage_info(path) or {}).get("status")
 
 
 def _lines(path):
