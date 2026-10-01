@@ -333,14 +333,18 @@ expect a campaign's first rounds to find its loopholes.
   policy developer) and compares model names as written: give it in the same form as the workers' models
   (`worker_models`, or `worker_model` or `model` when that list is unset). Every call keeps its own transcript in the
   attempt's folder, the refused one included.
-- **The account at its usage limit:** a refusal for one of the account's own limits (the stream names it
-  `five_hour` or `seven_day`; they bind every model alike) is not a failed attempt. When an attempt's call meets
-  one, from its own model or from the fallback, the attempt waits for the limit to reset, checking again at least
-  every 10 minutes (so switching the account ends the wait sooner), then makes the call again, its own model first;
-  the run log says when it will try, and the attempt records the time in `worker.waited_for_limit_s`. A run that is
-  stopped ends the wait. Without this, a limit turned every call of a round into a recorded failure within
-  seconds, and the loop ran through rounds doing no work. A model's own limit (`seven_day_overage_included`, say)
-  is still the fallback's to cover, and fails the attempt as before when there is no fallback.
+- **The account at its usage limit:** a call refused for a usage limit before the model ran is never a failed
+  attempt. When no model the attempt may use can run (no fallback, the fallback is the same model, or it is refused
+  as well), the attempt waits for the earliest reset the refusals name, checking again at least every 10 minutes (so
+  switching the account ends the wait sooner), then makes the call again, its own model first; the run log says
+  when it will try, and the attempt records the time in `worker.waited_for_limit_s`. The limit's kind does not
+  decide this: Claude Code names one of `five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`,
+  `seven_day_overage_included` and `overage`, or none, and reports the exceeded window that resets last, so a kind
+  cannot say which models a refusal binds. A model with a limit of its own and no fallback therefore holds its batch
+  until the limit resets; set `llm.worker_fallback` to keep the other seats working meanwhile. The novelty check
+  waits the same way when its calls are refused, and so does the dream's policy developer. A run that is stopped
+  ends every wait. Without this, a limit turned every call of a round into a recorded failure within seconds, and
+  the loop ran through rounds doing no work.
 - **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
   session to `logs/workers/<attempt>/<UTC time>-<random>.jsonl` or `logs/developer/<UTC time>-<random>.jsonl` in the
   campaign. The first

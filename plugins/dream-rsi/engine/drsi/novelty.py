@@ -14,6 +14,7 @@ import re
 import unicodedata
 from pathlib import Path
 
+from .llm import LLMLimited
 from .bm25 import BM25
 from .families import OTHER, family_stats
 from .store import Tree, utcnow
@@ -103,6 +104,8 @@ def _query_fingerprint(llm, proposal: str, goal: str) -> str:
     try:
         out = llm.json(build_prompt([{"id": "proposal", "parent": None, "proposal": proposal, "text": {}}], goal),
                        FP_SCHEMA)
+    except LLMLimited:
+        raise  # a usage limit is no failed lookup: the check waits for it
     except Exception:  # noqa: BLE001
         return ""
     for item in (out.get("items") or []) if isinstance(out, dict) else []:
@@ -430,6 +433,8 @@ def _confirm(llm, goal: str, proposal: str, records: list[str], seen: list[str],
               + f"\nRECORDS >>>\n\nPROPOSAL\n{proposal}\n")
     try:
         out = llm.json(prompt, CONFIRM_SCHEMA)
+    except LLMLimited:
+        raise  # a usage limit is no confirmation: the check waits for it
     except Exception as e:  # noqa: BLE001
         return {"verdict": "confirm_duplicate", "same_mechanism_as": "", "rationale": f"confirmation failed: {e}"}
     return out if isinstance(out, dict) else {"verdict": "confirm_duplicate", "same_mechanism_as": ""}

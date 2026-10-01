@@ -11,8 +11,10 @@ import json
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
+from drsi import live
 from drsi.agent import AgentResult, ClaudeAgent
 from drsi.live import LiveRunner
 from drsi.question import ROOT
@@ -52,7 +54,12 @@ class LimitedTest(unittest.TestCase):
 
 
 class FallbackTest(unittest.TestCase):
-    setUp = r10.WorkerModelsTest.setUp  # its campaign set-up, not its tests
+    def setUp(self):
+        r10.WorkerModelsTest.setUp(self)
+        # round 49: a refusal no model can cover waits for the reset; these tests stop the run during that wait
+        stop = mock.patch.object(live, "wait_unless_stopping", return_value=False)
+        stop.start()
+        self.addCleanup(stop.stop)
     tearDown = r10.WorkerModelsTest.tearDown
     campaign = r10.WorkerModelsTest.campaign
 
@@ -89,7 +96,7 @@ class FallbackTest(unittest.TestCase):
         other = next(n for n in nodes if n is not fable_node)
         self.assertNotIn("fell_back_from", other["worker"])
 
-    def test_without_a_fallback_a_limited_attempt_fails_as_before(self):
+    def test_without_a_fallback_a_limited_attempt_fails_when_the_run_stops_in_its_wait(self):
         camp = self.campaign({"worker_models": ["fable"]})
         calls = []
         out = self.runner(camp, calls).run_batch([f"{ROOT}0"])

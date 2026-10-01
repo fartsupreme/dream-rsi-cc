@@ -5,8 +5,10 @@
   and names the refused fallback in worker.fallback_refused; the memory-cap kills of both calls are kept.
 """
 import unittest
+from unittest import mock
 from pathlib import Path
 
+from drsi import live
 from drsi.agent import AgentResult
 from drsi.live import LiveRunner
 from drsi.question import ROOT
@@ -15,7 +17,12 @@ from tests.test_live import fixed_checker
 
 
 class RefusedTwiceTest(unittest.TestCase):
-    setUp = r10.WorkerModelsTest.setUp
+    def setUp(self):
+        r10.WorkerModelsTest.setUp(self)
+        # round 49: a refusal no model can cover waits for the reset; these tests stop the run during that wait
+        stop = mock.patch.object(live, "wait_unless_stopping", return_value=False)
+        stop.start()
+        self.addCleanup(stop.stop)
     tearDown = r10.WorkerModelsTest.tearDown
     campaign = r10.WorkerModelsTest.campaign
 

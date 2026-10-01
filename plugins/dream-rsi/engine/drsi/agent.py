@@ -62,6 +62,19 @@ def allow_children() -> None:
     _STOPPING.clear()
 
 
+LIMIT_POLL_S = 600  # a wait for a usage limit checks again at least this often (an account switch ends it sooner)
+LIMIT_MIN_WAIT_S = 30
+
+
+def limit_wait(*refusals) -> int:
+    """Seconds to wait before trying calls refused for usage limits again: until the earliest reset among them (and
+    a few seconds more), at least LIMIT_MIN_WAIT_S and at most LIMIT_POLL_S; LIMIT_POLL_S when none names one."""
+    resets = [r.limit_reset for r in refusals if getattr(r, "limit_reset", None)]
+    if not resets:
+        return LIMIT_POLL_S
+    return int(min(LIMIT_POLL_S, max(LIMIT_MIN_WAIT_S, min(resets) - time.time() + 5)))
+
+
 def wait_unless_stopping(secs: float) -> bool:
     """Wait up to secs; False at once if the run begins stopping meanwhile (a waiting thread must not hold it up)."""
     return not _STOPPING.wait(secs)

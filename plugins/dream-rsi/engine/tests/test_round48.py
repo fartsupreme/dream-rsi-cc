@@ -133,18 +133,17 @@ class WaitTest(unittest.TestCase):
         self.assertEqual(node["worker"]["model"], "fable")
         self.assertNotIn("fallback_refused", node["worker"])
 
-    def test_a_models_own_limit_without_a_fallback_fails_as_before(self):
+    def test_a_models_own_limit_without_a_fallback_is_waited_out_too(self):  # round 49: whatever the kind
         node, calls, waits, _ = self.run_one({"worker_models": ["fable"]}, {"fable": ["seven_day_overage_included"]})
-        self.assertFalse(node["valid"])
-        self.assertEqual(waits, [])
-        self.assertEqual(calls, [("propose", "fable")])
+        self.assertTrue(node["valid"], node.get("fail_class"))
+        self.assertEqual(len(waits), 1)
 
-    def test_a_fallback_refused_for_its_own_limit_fails_as_before(self):
+    def test_a_fallback_refused_for_its_own_limit_is_waited_out_too(self):  # round 49
         node, calls, waits, _ = self.run_one({"worker_models": ["fable"], "worker_fallback": "opus"},
                                              {"fable": ["seven_day_overage_included"], "opus": ["seven_day_opus"]})
-        self.assertFalse(node["valid"])
-        self.assertEqual(waits, [])
-        self.assertEqual(node["worker"].get("fallback_refused"), "opus")
+        self.assertTrue(node["valid"], node.get("fail_class"))
+        self.assertEqual(len(waits), 1)
+        self.assertNotIn("fallback_refused", node["worker"])
 
     def test_a_stopping_run_ends_the_wait(self):
         node, calls, waits, _ = self.run_one({"worker_models": ["opus"]}, {"opus": ["five_hour"] * 5},
