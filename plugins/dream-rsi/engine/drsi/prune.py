@@ -63,6 +63,14 @@ def prune(camp: Campaign, ids: set[str] | None = None, error_match: str | None =
     rep = {"pruned": victims, "refused": refused, "in_progress": in_progress,
            "reparented": [n["id"] for n in tree.nodes() if n["parent"] in gone and n["id"] not in gone],
            "worlds_removed": [], "worlds_rewritten": []}
+    if dry_run and victims:  # what the world step below would do, without doing it
+        for wp in sorted(pool.glob("*/world.json")):
+            try:
+                ids = {n["id"] for n in json.loads(wp.read_text())["nodes"]}
+            except FileNotFoundError:
+                continue
+            if ids & gone:
+                rep["worlds_removed" if ids <= gone else "worlds_rewritten"].append(wp.parent.name)
     if dry_run or not victims:
         if not dry_run:  # a rerun after a failure past the tree step still refreshes the map
             from .live import write_map
