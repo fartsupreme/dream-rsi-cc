@@ -382,7 +382,7 @@ class ResetFailsTest(Base):
 
 
 class CheckCapTest(Base):
-    def run_checked(self, raises):
+    def run_with_check(self, raises):
         """The check's calls raise `raises` in order, then give a novel verdict."""
         camp = self.campaign({"worker_models": ["opus"]})
         calls, novel = [], fixed_checker("novel")
@@ -407,14 +407,14 @@ class CheckCapTest(Base):
         return camp.tree.get(out[0]["id"]), calls, waits
 
     def test_a_check_stopped_after_work_again_and_again_gives_up(self):
-        node, calls, waits = self.run_checked([LLMLimited("stopped after work", worked=True) for _ in range(10)])
+        node, calls, waits = self.run_with_check([LLMLimited("stopped after work", worked=True) for _ in range(10)])
         self.assertFalse(node["valid"])
         self.assertEqual(node.get("fail_class"), "orchestrator_error")
         self.assertEqual(len(calls), 4)
         self.assertEqual(len(waits), 3)
 
     def test_a_check_refused_before_work_waits_however_often(self):
-        node, calls, waits = self.run_checked([LLMLimited("refused") for _ in range(6)])
+        node, calls, waits = self.run_with_check([LLMLimited("refused") for _ in range(6)])
         self.assertTrue(node["valid"], node.get("fail_class"))
         self.assertEqual(len(waits), 6)
 
