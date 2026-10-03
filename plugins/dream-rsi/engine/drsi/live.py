@@ -102,6 +102,21 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _clear_dir(path: Path, keep: tuple = ()) -> None:
+    """Empty a directory the worker may write to, keeping the names in `keep`; links are removed, never followed."""
+    try:
+        entries = list(Path(path).iterdir())
+    except FileNotFoundError:
+        return
+    for x in entries:
+        if x.name in keep:
+            continue
+        if x.is_dir() and not x.is_symlink():
+            shutil.rmtree(x, ignore_errors=True)
+        else:
+            x.unlink(missing_ok=True)
+
+
 def _clip(text: str, cap: int) -> str:
     return text if len(text) <= cap else text[:cap] + "…"
 
@@ -176,6 +191,8 @@ class LiveRunner:
         self._fallback_refused: dict[str, str] = {}  # attempt id -> a fallback that was refused as well
         self._limit_waits: dict[str, float] = {}  # attempt id -> seconds it waited out the account's usage limit
         self._cut_offs: dict[str, int] = {}  # attempt id -> its calls a usage limit stopped after the model had worked
+        self._stopped_waiting: set[str] = set()  # attempts the run's stop found waiting out a usage limit
+        self._last: dict[str, AgentResult] = {}  # attempt id -> the result of its latest call, while its calls run
         objective = cfg["live"].get("objective")
         if objective is not None and (not isinstance(objective, str) or not objective.strip()):
             raise ValueError(f"live.objective must be text saying what the workspace scores, not {objective!r}")
@@ -330,9 +347,23 @@ class LiveRunner:
         call the limit cut off after the model had worked is treated the same, and `reset` (the caller's) undoes what
         it did before the call is made again. A run that begins stopping ends the wait."""
         kills: list = []
+        if nid is not None:
+            self._last.pop(nid, None)
+        try:
+            return self._call_until_run(path, system, nid, reset, kills)
+        finally:  # kept even if a reset fails, so the record still names the calls and what the memory cap killed
+            if nid is not None:
+                last = self._last.pop(nid, None)
+                if last is not None:
+                    self._last_call[nid] = last
+                self._mem_kills.setdefault(nid, []).extend(kills)
+
+    def _call_until_run(self, path, system, nid, reset, kills: list) -> AgentResult:
         while True:
             res, part, refusals, other = self._try_call(path, system, nid, reset)
             kills += part
+            if nid is not None:
+                self._last[nid] = res
             if not refusals:
                 break
             secs = limit_wait(*refusals)
@@ -340,16 +371,18 @@ class LiveRunner:
             until = time.strftime("%H:%M", time.gmtime(time.time() + secs))
             self.log(f"{nid}: no model it may use can run ({kinds} usage limit); waiting until {until} UTC, then "
                      "trying again")
+            cut = any(getattr(r, "cut_off", False) for r in refusals) and reset is not None
             if not wait_unless_stopping(secs):
                 if other is not None and other == self.worker_fallback:  # stopped while the fallback was refused too
                     self._fallback_refused[nid] = other
+                if cut:
+                    reset()  # a stopped run keeps none of the cut-off call's half work: it is no attempt's result
+                if nid is not None:
+                    self._stopped_waiting.add(nid)
                 break
             self._limit_waits[nid] = self._limit_waits.get(nid, 0.0) + secs
-            if any(getattr(r, "cut_off", False) for r in refusals) and reset is not None:
+            if cut:
                 reset()  # the last call made worked before the limit stopped it
-        if nid is not None:
-            self._last_call[nid] = res  # an attempt that fails later still names its last call's transcript
-            self._mem_kills.setdefault(nid, []).extend(kills)
         return res
 
     def _try_call(self, path, system, nid: str | None, reset=None) -> tuple[AgentResult, list, tuple, str | None]:
@@ -425,7 +458,7 @@ class LiveRunner:
                 def fresh_proposal():  # a proposal call the limit cut off: nothing it did survives
                     with self._git_lock:
                         self.ws.recreate(nid, start)
-                    _clear(self.proposal_file(nid))
+                    _clear_dir(self.proposal_dir(nid))
                 for _ in range(max(1, int(cfg["live"].get("max_proposals", 3)))):
                     _clear(self.proposal_file(nid))  # a stale proposal must never be judged again
                     res = self._call(path, self.brief_propose(nid, parent, branch, path, map_text, feedback), nid,
@@ -449,6 +482,7 @@ class LiveRunner:
             def fresh_build():  # a build the limit cut off: the build is made again from the attempt's start
                 with self._git_lock:
                     self.ws.recreate(nid, start)
+                _clear_dir(self.proposal_dir(nid), keep=("proposal.txt",))
             res = self._call(path, self.brief_implement(nid, parent, branch, path, check, map_text), nid,
                              reset=fresh_build)
             return self._finish(job, res, check, checks)
@@ -537,8 +571,10 @@ class LiveRunner:
             rec["fallback_refused"] = self._fallback_refused[nid]
         if self._limit_waits.get(nid):  # the time its calls waited for the account's usage limit to reset
             rec["waited_for_limit_s"] = round(self._limit_waits[nid])
-        if self._cut_offs.get(nid):  # calls the limit stopped after the model had worked, each undone and made again
+        if self._cut_offs.get(nid):  # calls the limit stopped after the model had worked (each undone)
             rec["cut_off_by_limit"] = self._cut_offs[nid]
+        if nid in self._stopped_waiting:  # the run's stop found it waiting out a usage limit: its end is the stop's
+            rec["stopped_in_limit_wait"] = True
         if self._mem_kills.get(nid):  # the processes the memory cap killed in any of the attempt's calls
             rec["mem_kills"] = list(self._mem_kills[nid])
         return rec

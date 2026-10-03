@@ -10,6 +10,12 @@
   same way. The record counts the cut-off calls (worker.cut_off_by_limit).
 - A worker started its offload helper with a shell `&` inside a background command; the `&` cut it loose from the
   worker's session. The brief says to start it with the background parameter and no `&` of its own.
+- Review (Opus): the cut-off read ignored the result, so a call that failed otherwise after a rejected usage event was
+  made again until the window reset; a cut-off needs an error result of status 429 that is not a short-term
+  rate_limit_error, and either the rejected event or Claude Code's synthetic rate_limit message. A short-term
+  rate_limit_error is again an ordinary error to the novelty check (tried again at once), not a 10-minute wait. A stop
+  during the wait committed the cut-off build's half work; the reset now runs first and the record says the attempt
+  was stopped in a limit wait. The reset also clears what the cut-off call left in the attempt's proposal directory.
 - The scorer's summary was kept to 800 characters, which lost the per-margin lines a reading turns on. It is kept to
   4000.
 """
@@ -78,6 +84,28 @@ class ResultTest(unittest.TestCase):
         self.assertFalse(res.limited)
 
 
+class ShapeTest(ResultTest):
+    def test_a_rejected_event_before_another_failure_is_not_a_cut_off(self):
+        for result in ({"api_error_status": 500, "result": "API Error: 500"},
+                       {"subtype": "error_max_turns", "is_error": True, "api_error_status": None},
+                       {"api_error_status": 400, "result": "Prompt is too long"}):
+            ev = cut_off_stream()
+            del ev[4]  # no synthetic rate_limit message: the call ended for another reason
+            ev[-1] = dict(ev[-1], **result)
+            self.assertFalse(self.run_agent(ev).cut_off, result)
+
+    def test_a_short_term_rate_limit_is_not_a_cut_off(self):
+        ev = cut_off_stream()
+        ev[-1] = dict(ev[-1], api_error="rate_limit_error")
+        self.assertFalse(self.run_agent(ev).cut_off)
+
+    def test_a_cut_off_without_the_rejected_event_is_still_one(self):
+        ev = cut_off_stream()
+        del ev[3]  # the synthetic rate_limit message and the 429 result remain
+        res = self.run_agent(ev)
+        self.assertTrue(res.cut_off)
+
+
 class Base(unittest.TestCase):
     setUp = r10.WorkerModelsTest.setUp
     tearDown = r10.WorkerModelsTest.tearDown
@@ -144,6 +172,29 @@ class CutOffTest(Base):
         self.assertEqual([s[:2] for s in seen if s[0] == "implement"], [("implement", "fable"), ("implement", "opus")])
         self.assertFalse([s for s in seen if s[0] == "implement"][1][2])
 
+    def test_a_cut_off_calls_notes_in_the_proposal_directory_are_cleared(self):
+        camp = self.campaign({"worker_models": ["opus"]})
+        state, seen = {"cut": True}, []
+
+        def run(workspace, prompt, system, model=None):
+            pdir = camp.root / "work" / "_proposals" / workspace.name
+            if "PHASE: PROPOSE" in system:
+                return AgentResult(ok=True, structured={"proposal": "an idea", "summary": "", "self_reported_score": None,
+                                                        "notes": ""})
+            seen.append((pdir / "scratch.md").exists())
+            if state.pop("cut", False):
+                pdir.mkdir(parents=True, exist_ok=True)
+                (pdir / "scratch.md").write_text("notes from a build the limit cut off\n")
+                return AgentResult(ok=False, error="cut off", cut_off=True, limit_type="five_hour")
+            workspace.joinpath("value.txt").write_text("2\n")
+            return AgentResult(ok=True, structured={"proposal": "p", "summary": "s", "self_reported_score": None,
+                                                    "notes": ""})
+        r = LiveRunner(camp, run, indexer=lambda ids: None, round_id="iter0001", checker=fixed_checker("novel"))
+        with mock.patch.object(live, "wait_unless_stopping", return_value=True):
+            out = r.run_batch([f"{ROOT}0"])
+        self.assertTrue(camp.tree.get(out[0]["id"])["valid"])
+        self.assertEqual(seen, [False, False])
+
     def test_a_stop_during_the_wait_records_the_cut_off_call(self):
         camp = self.campaign({"worker_models": ["opus"]})
 
@@ -151,6 +202,7 @@ class CutOffTest(Base):
             if "PHASE: PROPOSE" in system:
                 return AgentResult(ok=True, structured={"proposal": "an idea", "summary": "", "self_reported_score": None,
                                                         "notes": ""})
+            workspace.joinpath("value.txt").write_text("half a build\n")
             return AgentResult(ok=False, error="cut off", cut_off=True, limit_type="five_hour")
         r = LiveRunner(camp, run, indexer=lambda ids: None, round_id="iter0001", checker=fixed_checker("novel"))
         with mock.patch.object(live, "wait_unless_stopping", return_value=False):
@@ -158,6 +210,8 @@ class CutOffTest(Base):
         node = camp.tree.get(out[0]["id"])
         self.assertFalse(node["valid"])
         self.assertEqual(node["worker"].get("cut_off_by_limit"), 1)
+        self.assertTrue(node["worker"].get("stopped_in_limit_wait"))
+        self.assertEqual(node["artifacts"].get("changed"), [], "the cut-off build's half work was committed")
 
 
 class CheckTest(unittest.TestCase):
@@ -170,6 +224,18 @@ class CheckTest(unittest.TestCase):
             return subprocess.CompletedProcess(args, 1, stdout=out, stderr="")
         with self.assertRaises(LLMLimited):
             ClaudeCLI(model="opus", runner=runner, cwd="/tmp").json("p", {"type": "object"})
+
+    def test_a_short_term_rate_limit_is_an_ordinary_error_tried_again_at_once(self):
+        outs = [json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429,
+                            "api_error": "rate_limit_error", "num_turns": 2, "duration_api_ms": 900,
+                            "result": "API Error: 429 rate_limit_error"}),
+                json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "{}",
+                            "structured_output": {"ok": 1}})]
+
+        def runner(args, **kw):
+            o = outs.pop(0)
+            return subprocess.CompletedProcess(args, 1 if "is_error\": true" in o else 0, stdout=o, stderr="")
+        self.assertEqual(ClaudeCLI(model="opus", runner=runner, cwd="/tmp").json("p", {"type": "object"}), {"ok": 1})
 
 
 class DreamTest(unittest.TestCase):
