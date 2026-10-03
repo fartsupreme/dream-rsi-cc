@@ -8,18 +8,30 @@
   (ETXTBSY) or not yet executable (ENOEXEC): those are waited out the same way, and the call is tried again until it
   starts or the wait runs out. Anything else missing, such as the working directory, is the error it was; a binary that
   never comes back, or a run that begins stopping, ends the wait with the same error.
+- Review (Opus): npm 11 renames the old link away, links a placeholder script (exec: ENOEXEC), then the new binary;
+  the window lasted about 2 s, and the same version was installed again every 15 minutes or so. The wait now looks for
+  the binary on the call's own PATH, its deadline is monotonic, and only args[0] as given counts. A worker whose
+  `claude` never came back was recorded as the model's failure (agent_error); it is the loop's (orchestrator_error).
+  A policy developer that could not be started ended the whole run with a traceback; it fails its revision.
 """
 import errno
 import json
+import os
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from drsi import agent
-from drsi.agent import ClaudeAgent
+from drsi import agent, live
+from drsi.agent import AgentResult, ClaudeAgent
+from drsi.live import LiveRunner
 from drsi.llm import ClaudeCLI
+from drsi.question import ROOT
+from tests import test_round10 as r10
+from tests.test_live import fixed_checker
 
 GONE = FileNotFoundError(2, "No such file or directory", "claude")
 OK_STREAM = [{"type": "system", "subtype": "init"},
@@ -52,7 +64,8 @@ class Base(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def which_(self, name):
+    def which_(self, name, path=None):
+        self.paths = getattr(self, "paths", []) + [path]
         return self.which.pop(0) if self.which else "/opt/homebrew/bin/claude"
 
     def wait_(self, secs):
@@ -109,6 +122,74 @@ class AgentTest(Base):
                 self.assertRaises(FileNotFoundError):
             self.run_agent(runner)
         self.assertEqual(len(runner.calls), 1)
+
+
+class PathTest(Base):
+    def test_the_wait_looks_for_claude_on_the_calls_own_path(self):
+        agent.run_claude(Runner(GONE), ["claude", "-p"], env={"PATH": "/only/here"})
+        self.assertEqual(set(self.paths), {"/only/here"})
+
+
+class RecordTest(unittest.TestCase):
+    setUp = r10.WorkerModelsTest.setUp
+    tearDown = r10.WorkerModelsTest.tearDown
+    campaign = r10.WorkerModelsTest.campaign
+
+    def test_a_worker_whose_claude_never_came_back_is_the_loops_failure_not_the_models(self):
+        camp = self.campaign({"worker_models": ["opus"]})
+
+        def run(workspace, prompt, system, model=None):
+            if "PHASE: PROPOSE" in system:
+                return AgentResult(ok=True, structured={"proposal": "an idea", "summary": "", "self_reported_score": None,
+                                                        "notes": ""})
+            raise FileNotFoundError(2, "No such file or directory", "claude")
+        r = LiveRunner(camp, run, indexer=lambda ids: None, round_id="iter0001", checker=fixed_checker("novel"))
+        out = r.run_batch([f"{ROOT}0"])
+        node = camp.tree.get(out[0]["id"])
+        self.assertEqual(node.get("fail_class"), "orchestrator_error")
+        self.assertIn("claude", node["text"]["orchestrator_error"])
+
+
+class DreamTest(unittest.TestCase):
+    def test_a_developer_that_cannot_be_started_is_a_failed_revision_not_a_crashed_run(self):
+        from drsi import dream
+        from tests.test_dream import DREAM_CFG, DreamTest as Base_
+        case = Base_("test_unchanged_file_is_not_deployed")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+
+        def dev(sandbox, prompt):
+            raise FileNotFoundError(2, "No such file or directory", "claude")
+        rep = dream.run_dream(case.pdir, case.worlds, dev, DREAM_CFG, case.logs)
+        self.assertEqual([r["stage"] for r in rep["revisions"]], ["agent"] * DREAM_CFG["dream"]["M"])
+        self.assertIn("FileNotFoundError", rep["revisions"][0]["error"])
+
+
+class RealExecTest(unittest.TestCase):
+    def test_npms_sequence_missing_then_a_placeholder_then_the_binary(self):
+        # npm 11 renames the old link away, links a placeholder script with no shebang (exec: ENOEXEC), then puts the
+        # real binary in its place; CPython names args[0] in each error, an absolute path here
+        pause = threading.Event()
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(agent._STOPPING, "wait", side_effect=lambda s: pause.wait(0.05)):
+            exe = Path(d) / "bin" / "claude"
+            exe.parent.mkdir()
+
+            def update():
+                time.sleep(0.1)
+                exe.write_text("placeholder, not a script\n")
+                exe.chmod(0o755)
+                time.sleep(0.5)
+                new = exe.with_name(".claude-new")
+                new.write_text("#!/bin/sh\ncat >/dev/null\n" + "".join(f"echo '{json.dumps(e)}'\n" for e in OK_STREAM))
+                new.chmod(0o755)
+                os.replace(new, exe)
+            th = threading.Thread(target=update)
+            th.start()
+            res = ClaudeAgent(model="opus", tools="Read", binary=str(exe), timeout=30).run(
+                d, "p", transcript=Path(d) / "w" / "t.jsonl")
+            th.join()
+        self.assertTrue(res.ok, res.error)
 
 
 class CLITest(Base):

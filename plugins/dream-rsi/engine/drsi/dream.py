@@ -15,7 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .agent import LIMIT_MAX_CUT_OFFS, limit_wait, stopped_by_limit, wait_unless_stopping
+from .agent import LIMIT_MAX_CUT_OFFS, AgentResult, limit_wait, stopped_by_limit, wait_unless_stopping
 from .guard import ALLOWED_MODULES
 from .question import POLICY_HASH_SEED
 from .replay import CURVES, SCORES, _run_once, evaluate_policy, resampled_reward
@@ -358,8 +358,13 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
                     shutil.rmtree(x) if x.is_dir() and not x.is_symlink() else x.unlink()
                 (sb / "method.py").write_text(best_src)
                 (sb / "REPORT.md").write_text(render_report(best_rep, revisions))
+            def ask():  # a developer that could not be started (no `claude` to run) fails its revision, not the run
+                try:
+                    return developer(sb, build_prompt(cfg))
+                except Exception as e:  # noqa: BLE001
+                    return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
             fresh()
-            res = developer(sb, build_prompt(cfg))
+            res = ask()
             stopped_after_work = 0
             while stopped_by_limit(res):  # the limit's, not the revision's: wait, then ask again from a fresh sandbox
                 if getattr(res, "cut_off", False):
@@ -370,7 +375,7 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
                     break
                 if getattr(res, "cut_off", False):
                     fresh()
-                res = developer(sb, build_prompt(cfg))
+                res = ask()
             new_src = (sb / "method.py").read_text()
         if not res.ok:
             revisions.append({"m": m, "stage": "agent", "error": res.error})

@@ -335,6 +335,8 @@ class LiveRunner:
                 if model:
                     return self.worker_fn(path, WORKER_PROMPT, system, model=model)
                 return self.worker_fn(path, WORKER_PROMPT, system)
+        except OSError:  # the call could not be started (no `claude` to run): the loop's failure, not the model's
+            raise
         except Exception as e:  # noqa: BLE001 - a crashed worker is a recorded attempt, not a lost round
             return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
 
