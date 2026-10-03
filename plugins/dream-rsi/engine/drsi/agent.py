@@ -344,33 +344,36 @@ CLAUDE_GONE_WAIT_S = 300  # how long a call waits for the `claude` binary while 
 
 
 def run_claude(runner, args, **kw):
-    """runner(args, **kw) for a `claude` call. Claude Code updates itself in place, replacing its package and the
-    `claude` link, and a call started in that window finds no binary (2026-10-03 04:54 UTC: an attempt was lost to
-    FileNotFoundError: 'claude'), or one still being written (busy, or not yet executable). Such a call waits until
-    the binary is back and is started again, until it starts or CLAUDE_GONE_WAIT_S has passed; anything else (a
-    missing working directory) is the error it was, and so is a binary that never comes back or a run stopping."""
-    deadline = time.time() + CLAUDE_GONE_WAIT_S
+    """runner(args, **kw) for a `claude` call. Claude Code updates itself through npm, which renames the installed
+    package and the `claude` link away, links a placeholder script, then puts the new binary in place; a call started
+    in that window (a few seconds; on 2026-10-03 the same version was installed again every 15 minutes or so) finds no
+    binary or one it cannot execute (2026-10-03 04:54 UTC: an attempt was lost to FileNotFoundError: 'claude'). Such a call waits until
+    the binary is found on the call's own PATH twice 2 s apart and is started again, until it starts or
+    CLAUDE_GONE_WAIT_S has passed; anything else (a missing working directory) is the error it was, and so is a binary
+    that never comes back or a run that begins stopping."""
+    deadline = time.monotonic() + CLAUDE_GONE_WAIT_S
+    path = (kw.get("env") or os.environ).get("PATH")
     while True:
         try:
             return runner(args, **kw)
         except OSError as e:
-            if not _being_replaced(e, args[0]) or not _binary_back(args[0], deadline):
+            if not _being_replaced(e, args[0]) or not _binary_back(args[0], deadline, path):
                 raise
 
 
 def _being_replaced(e: OSError, binary: str) -> bool:
-    """Starting `binary` failed as it does while it is being replaced: not there, busy, or not yet executable."""
-    return (e.errno in (errno.ENOENT, errno.ETXTBSY, errno.ENOEXEC)
-            and e.filename in (binary, os.path.basename(binary)))
+    """Starting `binary` failed as it does while it is being replaced: not there, or not executable yet (npm's
+    placeholder; ETXTBSY where a system reports a file still being written). CPython names args[0] in each."""
+    return e.errno in (errno.ENOENT, errno.ETXTBSY, errno.ENOEXEC) and e.filename == binary
 
 
-def _binary_back(binary: str, deadline: float) -> bool:
-    """True once `binary` is found twice 2 s apart (an update in progress has placed it, not still placing it) before
-    `deadline`; False if it is not, or the run begins stopping."""
+def _binary_back(binary: str, deadline: float, path: str | None = None) -> bool:
+    """True once `binary` is found on `path` twice 2 s apart (an update in progress has placed it, not still placing it)
+    before `deadline`; False if it is not, or the run begins stopping."""
     seen = 0
     while seen < 2:
-        seen = seen + 1 if shutil.which(binary) else 0
-        if seen < 2 and (time.time() >= deadline or _STOPPING.wait(2)):
+        seen = seen + 1 if shutil.which(binary, path=path) else 0
+        if seen < 2 and (time.monotonic() >= deadline or _STOPPING.wait(2)):
             return False
     return True
 
