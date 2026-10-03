@@ -346,7 +346,12 @@ expect a campaign's first rounds to find its loopholes.
   until the limit resets; set `llm.worker_fallback` to keep the other seats working meanwhile. The novelty check
   waits the same way when its calls are refused, and so does the dream's policy developer. A run that is stopped
   ends every wait. Without this, a limit turned every call of a round into a recorded failure within seconds, and
-  the loop ran through rounds doing no work.
+  the loop ran through rounds doing no work. A call the limit cuts off after the model has worked (its stream's last
+  usage event reads rejected, its result an error of status 429) is treated the same, once what it did is undone: a
+  build is made again on a fresh checkout at the attempt's start, a proposal on a fresh checkout with its proposal
+  file cleared, and the policy developer in a sandbox reset to the policy it was given; the attempt counts these
+  calls in `worker.cut_off_by_limit`. The novelty check's calls are single prompts that change nothing, so a limit
+  there, before or after work, is simply waited out.
 - **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
   session to `logs/workers/<attempt>/<UTC time>-<random>.jsonl` or `logs/developer/<UTC time>-<random>.jsonl` in the
   campaign. The first
