@@ -5,8 +5,10 @@ load inside worker sessions; project/local settings of the working directory do.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -338,6 +340,41 @@ def _headless(pids: set[int]) -> set[int] | None:
     return keep & pids
 
 
+CLAUDE_GONE_WAIT_S = 300  # how long a call waits for the `claude` binary while Claude Code replaces itself
+
+
+def run_claude(runner, args, **kw):
+    """runner(args, **kw) for a `claude` call. Claude Code updates itself in place, replacing its package and the
+    `claude` link, and a call started in that window finds no binary (2026-10-03 04:54 UTC: an attempt was lost to
+    FileNotFoundError: 'claude'), or one still being written (busy, or not yet executable). Such a call waits until
+    the binary is back and is started again, until it starts or CLAUDE_GONE_WAIT_S has passed; anything else (a
+    missing working directory) is the error it was, and so is a binary that never comes back or a run stopping."""
+    deadline = time.time() + CLAUDE_GONE_WAIT_S
+    while True:
+        try:
+            return runner(args, **kw)
+        except OSError as e:
+            if not _being_replaced(e, args[0]) or not _binary_back(args[0], deadline):
+                raise
+
+
+def _being_replaced(e: OSError, binary: str) -> bool:
+    """Starting `binary` failed as it does while it is being replaced: not there, busy, or not yet executable."""
+    return (e.errno in (errno.ENOENT, errno.ETXTBSY, errno.ENOEXEC)
+            and e.filename in (binary, os.path.basename(binary)))
+
+
+def _binary_back(binary: str, deadline: float) -> bool:
+    """True once `binary` is found twice 2 s apart (an update in progress has placed it, not still placing it) before
+    `deadline`; False if it is not, or the run begins stopping."""
+    seen = 0
+    while seen < 2:
+        seen = seen + 1 if shutil.which(binary) else 0
+        if seen < 2 and (time.time() >= deadline or _STOPPING.wait(2)):
+            return False
+    return True
+
+
 def run_group(args, input=None, capture_output=True, text=True, timeout=None, cwd=None, env=None,
               sweep: list | None = None, stdout_path=None, stderr_path=None, mem_cap_bytes: int | None = None):
     """subprocess.run with the child in its own process group, killed on exit or timeout, so tool
@@ -458,10 +495,10 @@ class ClaudeAgent:
         if self.mem_cap_gb:
             kw["mem_cap_bytes"] = int(self.mem_cap_gb * 1024 ** 3)
         try:
-            proc = self.runner(self.build_args(add_dirs, stream=transcript is not None), input=prompt,
-                               capture_output=True, text=True, timeout=self.timeout, cwd=str(cwd), sweep=[str(cwd)],
-                               env=call_env(self.env),
-                               **kw)
+            proc = run_claude(self.runner, self.build_args(add_dirs, stream=transcript is not None), input=prompt,
+                              capture_output=True, text=True, timeout=self.timeout, cwd=str(cwd), sweep=[str(cwd)],
+                              env=call_env(self.env),
+                              **kw)
         except subprocess.TimeoutExpired as e:
             where = f"; {_stream_summary(tpath)}{_stderr_tail(epath)}" if tpath else ""
             return AgentResult(ok=False, secs=time.time() - t0, transcript=tpath,

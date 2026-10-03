@@ -359,6 +359,11 @@ expect a campaign's first rounds to find its loopholes.
   work is never recorded as the attempt's, and the attempt records `worker.stopped_in_limit_wait`. The novelty
   check's calls are single prompts that change nothing, so a usage limit there is waited out the same way (a call
   stopped after work at most three times), and `drsi check` stopped by one gives no verdict and exits 7.
+- **Claude Code updating itself:** Claude Code replaces its own package and the `claude` link when it updates, and a
+  call started in that window finds no binary, or one still being written (busy, or not yet executable). Such a call
+  (a worker's, the policy developer's, the judge's or the classifier's) waits for `claude` to be back, checking every
+  2 seconds, and is started again until it starts or 5 minutes have passed; any other missing file, such as the
+  working directory, fails the call as before.
 - **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
   session to `logs/workers/<attempt>/<UTC time>-<random>.jsonl` or `logs/developer/<UTC time>-<random>.jsonl` in the
   campaign. The first
