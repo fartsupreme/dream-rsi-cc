@@ -187,6 +187,11 @@ class Registry:
             self._data.update(guardian=pid, guardian_start=started or None)
             _write(self.path, self._data)
 
+    def identity(self) -> tuple:
+        """(pid, start time) of the run this registry records."""
+        with self._lock:
+            return identity(self._data)
+
     def note(self, **fields) -> None:
         """Record what this run supports (`stops_after_round`), for `drsi stop` to read."""
         with self._lock:

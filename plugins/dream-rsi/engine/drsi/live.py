@@ -844,68 +844,104 @@ def _has_signal(worlds: list[dict]) -> bool:
 
 
 STOP_REQUEST = "stop_after_round"  # logs/<this>: `drsi stop --after-round` asks the run to end at a round boundary
-STOPPED_AT = "stopped_after_round"  # logs/<this>: the run that took such a request, and after which round
+STOPPED_AT = "stopped_after_round"  # logs/<this>: the run that ended at a round boundary, and after which round
+# A run is named as its registry names it: its pid and that process's start time, since a pid alone can be a later
+# process's. A start time of None (a run_cycles called without one) matches on the pid alone.
 
 
-def request_stop_after_round(camp: Campaign, run: int) -> None:
-    """Ask the campaign's run (process `run`) to end once the round under way has frozen its world and run its
-    dream (round 53)."""
+def request_stop_after_round(camp: Campaign, run: int, started: str | None = None) -> None:
+    """Ask the campaign's run (process `run`, started at `started`) to end once the round under way has frozen its
+    world and taken its dream step (round 53)."""
     path = camp.root / "logs" / STOP_REQUEST
     path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, json.dumps({"run": int(run), "asked": utcnow()}) + "\n")
+    _atomic_write(path, json.dumps({"run": int(run), "start": started, "asked": utcnow()}) + "\n")
 
 
 def stop_requested(camp: Campaign) -> bool:
     return (camp.root / "logs" / STOP_REQUEST).exists()
 
 
-def _requested_run(camp: Campaign) -> int | None:
+def _read(path: Path) -> tuple[tuple[int, str | None], dict] | None:
+    """A request's or a boundary record's run (pid, start time) and the whole record, read once."""
     try:
-        return int(json.loads((camp.root / "logs" / STOP_REQUEST).read_text())["run"])
-    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        data = json.loads(path.read_text())
+        return (int(data["run"]), data.get("start")), data
+    except (FileNotFoundError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
-def stop_at_boundary(camp: Campaign, run: int, round_id: str) -> bool:
-    """At a round boundary of run `run`: take its request, if there is one, and say so for `drsi stop --wait`."""
-    if not take_stop_request(camp, run):
-        return False
-    _atomic_write(camp.root / "logs" / STOPPED_AT, json.dumps({"run": int(run), "after": round_id,
-                                                               "at": utcnow()}) + "\n")
-    return True
+def _named_run(path: Path) -> tuple[int, str | None] | None:
+    found = _read(path)
+    return found and found[0]
 
 
-def stopped_at_boundary(camp: Campaign, run: int) -> str | None:
-    """The round after which run `run` took a `drsi stop --after-round` request, or None if it took none."""
-    try:
-        data = json.loads((camp.root / "logs" / STOPPED_AT).read_text())
-        return str(data["after"]) if int(data["run"]) == int(run) else None
-    except (FileNotFoundError, ValueError, KeyError, TypeError):
+def _names(found: tuple | None, run: int, started: str | None) -> bool:
+    return (found is not None and found[0] == int(run)
+            and (found[1] is None or started is None or found[1] == started))
+
+
+def _requested_run(camp: Campaign) -> tuple[int, str | None] | None:
+    return _named_run(camp.root / "logs" / STOP_REQUEST)
+
+
+def stop_at_boundary(camp: Campaign, run: int, round_id: str, started: str | None = None,
+                     ending: bool = False) -> bool:
+    """At a round boundary of run `run`: take its request, if there is one. When the run ends here (it took one, or
+    `ending`: its rounds are done), record so for `drsi stop --wait`, which also meets a request made as it closes."""
+    took = take_stop_request(camp, run, started)
+    if took or ending:
+        _atomic_write(camp.root / "logs" / STOPPED_AT,
+                      json.dumps({"run": int(run), "start": started, "after": round_id, "at": utcnow()}) + "\n")
+    return took
+
+
+def stopped_at_boundary(camp: Campaign, run: int, started: str | None = None) -> str | None:
+    """The round after which run `run` ended at a round boundary, or None if it ended some other way."""
+    found = _read(camp.root / "logs" / STOPPED_AT)
+    if found is None or not _names(found[0], run, started) or "after" not in found[1]:
         return None
+    return str(found[1]["after"])
 
 
-def take_stop_request(camp: Campaign, run: int | None = None) -> bool:
-    """Withdraw the request; True if there was one, for `run` when it is given (one for another run is stale: it is
-    withdrawn and does not count)."""
-    mine = run is None or _requested_run(camp) == run
+def take_stop_request(camp: Campaign, run: int | None = None, started: str | None = None,
+                      leave_others: bool = False) -> bool:
+    """Withdraw the request: True if there was one, naming run `run` when it is given. One naming another run is
+    stale and withdrawn too, unless `leave_others` (then it is put back, if no newer one took its place). The file is
+    claimed by renaming it before it is read, so a request written meanwhile is a new file, never removed unread."""
+    path = camp.root / "logs" / STOP_REQUEST
+    claimed = path.with_name(f"{STOP_REQUEST}.{os.getpid()}.{threading.get_ident()}.taken")
     try:
-        (camp.root / "logs" / STOP_REQUEST).unlink()
-        return mine
+        os.replace(path, claimed)
     except FileNotFoundError:
         return False
+    try:
+        mine = run is None or _names(_named_run(claimed), run, started)
+        if not mine and leave_others:
+            try:
+                os.link(claimed, path)
+            except FileExistsError:
+                pass  # a newer request stands
+            except OSError:  # a file system without hard links: put it back unless a newer one stands
+                if not path.exists():
+                    os.replace(claimed, path)
+        return mine
+    finally:
+        claimed.unlink(missing_ok=True)
 
 
-def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=None, progress=None) -> dict:
+def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=None, progress=None,
+               started: str | None = None) -> dict:
+    """`n` live rounds, each followed by its world and its dream step. `started` is this process's start time as the
+    run's registry records it: with the pid, it is the name a `drsi stop --after-round` request gives this run."""
     say = progress or (lambda msg: None)
     policy_dir = camp.root / "policy"
     policy_dir.mkdir(exist_ok=True)
     if not (policy_dir / "method.py").exists():
         (policy_dir / "method.py").write_text(SEED_POLICY.read_text())
-    rounds, me = [], os.getpid()  # the run is this process: `drsi stop --after-round` names it in its request
-    if stop_requested(camp) and _requested_run(camp) != me:
-        take_stop_request(camp)  # one left for an earlier run is not this run's
+    rounds, me = [], os.getpid()  # the run is this process; a request left for an earlier one is dropped at a boundary
     for _ in range(n):
-        if rounds and stop_at_boundary(camp, me, rounds[-1]["round_id"]):  # `drsi stop --after-round`: the last round's world and dream are done
+        # `drsi stop --after-round`: the last round's world and dream step are done, and no other round starts
+        if rounds and stop_at_boundary(camp, me, rounds[-1]["round_id"], started):
             say(f"{rounds[-1]['round_id']}: stopping at the round boundary, as `drsi stop --after-round` asked")
             break
         round_id = next_round_id(camp)
@@ -932,6 +968,6 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
         rounds.append(summary | {"dream": {"deployed": d["deployed"], "version": d["version"],
                                            "incumbent_reward": d["incumbent_reward"], "best_reward": d["best_reward"]}})
     else:
-        if rounds:  # the run ends at a round boundary anyway: a request made in its last round is met
-            stop_at_boundary(camp, me, rounds[-1]["round_id"])
+        if rounds:  # the run ends at a round boundary anyway: a request made in its last round, or as it closes, is met
+            stop_at_boundary(camp, me, rounds[-1]["round_id"], started, ending=True)
     return {"rounds": rounds}

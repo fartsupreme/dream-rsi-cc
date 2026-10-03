@@ -435,6 +435,9 @@ def cmd_stop(a) -> int:
     lock is free, the run's guardian (or, with no guardian left, this command) kills whatever the run left. With
     --after-round, only ask the run to end at its next round boundary (see _ask_after_round)."""
     from . import guardian
+    if a.wait and not a.after_round:
+        _err("drsi stop: --wait goes with --after-round (a plain stop always waits for the run to end)")
+        return 2
     camp = resolve_campaign(a.campaign)
     path = camp.root / "logs" / guardian.REGISTRY
     try:
@@ -443,9 +446,6 @@ def cmd_stop(a) -> int:
         print("no run is recorded for this campaign; nothing to stop")
         return 0
     run, started = guardian.identity(data)
-    if a.wait and not a.after_round:
-        _err("drsi stop: --wait goes with --after-round (a plain stop always waits for the run to end)")
-        return 2
 
     def wait_free(secs: float) -> bool:
         end = time.time() + secs
@@ -604,10 +604,10 @@ def _run_lock(camp: Campaign):
 def _ask_after_round(a, camp, path, data: dict, run, started) -> int:
     """`drsi stop --after-round`: the round under way finishes (its world frozen, its dream step taken) and the run exits
     before it starts another, so a restart kills no attempt half done (round 53). The request names the run, so no
-    later run takes it. With --wait, return once the run has ended: 0 at the round boundary, 1 if it ended some other
-    way first (the request it never took is withdrawn)."""
+    later run takes it. With --wait, return once the run has ended: 0 if it ended at a round boundary (as asked, or
+    its rounds done), 1 if it ended some other way; a request it never took is withdrawn, not left for a later run."""
     from . import guardian
-    from .live import _requested_run, request_stop_after_round, stopped_at_boundary, take_stop_request
+    from .live import request_stop_after_round, stopped_at_boundary, take_stop_request
     if not guardian.run_lock_held(path):
         print("no run is running for this campaign; nothing to ask")
         return 0
@@ -618,17 +618,16 @@ def _ask_after_round(a, camp, path, data: dict, run, started) -> int:
         print(f"run {run} was started by a drsi without --after-round and would never see the request; nothing was "
               "asked. Stop it with `drsi stop` once its round has finished")
         return 2
-    request_stop_after_round(camp, int(run))
+    request_stop_after_round(camp, int(run), started)
     print(f"run {run} stops at its next round boundary: the round under way finishes, freezes its world and takes its "
           "dream step, and no further round starts")
     if not a.wait:
         return 0
     while guardian.run_lock_held(path) and guardian.alive(run, started) is not False:  # as long as the round takes
         time.sleep(2)  # (this run's own life: a later holder of the lock is another run)
-    after = stopped_at_boundary(camp, int(run))  # what the run itself recorded, never inferred from the file's absence
+    after = stopped_at_boundary(camp, int(run), started)  # what the run itself recorded, never inferred from the file
+    take_stop_request(camp, int(run), started, leave_others=True)  # one it never took (it ended, or was closing, first)
     if after is None:
-        if _requested_run(camp) == int(run):
-            take_stop_request(camp)  # not left for a later run to find
         print(f"run {run} ended before its round boundary; the request is withdrawn")
         return 1
     print(f"run {run} stopped at the round boundary, after {after}")
@@ -666,7 +665,8 @@ def cmd_run(a) -> int:
     clean = False
     try:
         rep = run_cycles(camp, a.rounds, worker_fn=make_worker(camp), developer=make_developer(camp),
-                         indexer=make_indexer(camp), checker=make_checker(camp), progress=print)
+                         indexer=make_indexer(camp), checker=make_checker(camp), progress=print,
+                         started=registry.identity()[1])
         clean = True
     finally:
         stop_children()  # no child starts from here on, and every recorded group is killed

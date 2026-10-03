@@ -7,7 +7,8 @@ the node (artifacts.rescored); judges every live attempt's outcome again against
 writes the new readings into the frozen round worlds the dream learns from.
 
 Attempts that never reached the scorer (not novel, out of scope, a worker or an orchestration failure) are left alone:
-scoring them now would skip the checks that stopped them.
+scoring them now would skip the checks that stopped them. The exception is a finished build the run's stop left
+unscored (worker.stopped_by_run with changed files): its checks had passed, and only the stop kept it from the scorer.
 """
 from __future__ import annotations
 

@@ -15,6 +15,11 @@
   a run started by an older drsi never sees the request, so `--after-round` refuses it instead of waiting forever; the
   request names its run, so a run that starts as it is written cannot drop it; `--wait` exits 1 when the run ended
   some other way, and is refused without `--after-round`.
+- Final check (Opus): taking the request read the file and then removed whatever was there, so a request written in
+  between was lost (it is now claimed by renaming it before it is read); the request and the run's boundary record
+  named the run by pid alone (now pid and start time, as the run's registry does, since a pid can be a later
+  process's); a run that ended because its rounds were done recorded no boundary, so a request made while it closed
+  read as "ended before its round boundary"; `--wait` alone was accepted when no run was recorded.
 """
 import io
 import json
@@ -90,6 +95,41 @@ class RoundBoundaryTest(unittest.TestCase):
         rep = run_cycles(self.camp, 2, worker_fn=asking, developer=developer, indexer=lambda ids: None)
         self.assertEqual(len(rep["rounds"]), 2)
 
+    def test_a_request_naming_this_pid_with_another_start_time_is_another_runs(self):
+        w = stub_worker()
+        path = self.camp.root / "logs" / live.STOP_REQUEST
+
+        def asking(workspace, prompt, system):
+            if not w.calls:  # left by an earlier process that had this pid
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"run": os.getpid(), "start": "Thu Jan  1 00:00:00 1970", "asked": "x"}))
+            return w(workspace, prompt, system)
+        rep = run_cycles(self.camp, 2, worker_fn=asking, developer=developer, indexer=lambda ids: None,
+                         started="Sat Oct  3 12:00:00 2026")
+        self.assertEqual(len(rep["rounds"]), 2)
+
+    def test_a_run_that_finishes_its_rounds_records_that_it_ended_at_a_round_boundary(self):
+        run_cycles(self.camp, 2, worker_fn=stub_worker(), developer=developer, indexer=lambda ids: None)
+        self.assertEqual(live.stopped_at_boundary(self.camp, os.getpid()), "iter0002")  # a request made as it closes
+
+    def test_a_request_written_while_one_is_taken_is_not_removed_unread(self):
+        path = self.camp.root / "logs" / live.STOP_REQUEST
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"run": 1, "asked": "x"}))  # a stale one, for a process long gone
+        real, wrote = json.loads, []
+
+        def loads(text, *a, **k):  # `drsi stop --after-round` writes this run's request while the stale one is read
+            out = real(text, *a, **k)
+            if not wrote:
+                wrote.append(1)
+                path.write_text(json.dumps({"run": os.getpid(), "asked": "y"}))
+            return out
+        with mock.patch.object(live.json, "loads", side_effect=loads):
+            self.assertFalse(live.take_stop_request(self.camp, os.getpid()))
+        self.assertTrue(wrote)
+        self.assertTrue(live.stop_requested(self.camp))  # the new request stands, for the run to take at its boundary
+        self.assertTrue(live.take_stop_request(self.camp, os.getpid()))
+
     def test_a_request_left_for_an_earlier_run_does_not_stop_a_new_one(self):
         live.request_stop_after_round(self.camp, 1)  # another process, long gone
         rep = run_cycles(self.camp, 2, worker_fn=stub_worker(), developer=developer, indexer=lambda ids: None)
@@ -141,7 +181,7 @@ class StopAfterRoundCliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(sent, [])
         self.assertIsNone(run.poll())
-        self.assertEqual(live._requested_run(self.camp), run.pid)
+        self.assertEqual(live._requested_run(self.camp), (run.pid, guardian.start_time(run.pid)))  # pid and start
         self.assertIn("round boundary", lines[-1])
 
     def test_wait_returns_once_the_run_has_stopped_at_the_boundary(self):
@@ -149,7 +189,7 @@ class StopAfterRoundCliTest(unittest.TestCase):
 
         def boundary():  # the run takes the request at its round boundary, then exits
             time.sleep(1)
-            live.stop_at_boundary(self.camp, run.pid, "iter0007")
+            live.stop_at_boundary(self.camp, run.pid, "iter0007", guardian.start_time(run.pid))
         threading.Thread(target=boundary).start()
         t0 = time.time()
         code, lines = self.stop("--after-round", "--wait")
@@ -166,6 +206,37 @@ class StopAfterRoundCliTest(unittest.TestCase):
         self.assertIsNotNone(run.poll())
         self.assertIn("ended before", lines[-1])
         self.assertFalse(live.stop_requested(self.camp))  # a request no run took is not left for the next
+
+    def test_wait_does_not_read_a_boundary_left_by_an_earlier_process_with_the_same_pid(self):
+        run = self.fake_run(1)
+        (self.camp.root / "logs" / live.STOPPED_AT).write_text(json.dumps(
+            {"run": run.pid, "start": "Thu Jan  1 00:00:00 1970", "after": "iter0003"}))
+        code, lines = self.stop("--after-round", "--wait")
+        self.assertEqual(code, 1)
+        self.assertIn("ended before", lines[-1])
+
+    def test_a_request_made_as_a_run_closes_after_its_last_round_is_met_and_withdrawn(self):
+        run = self.fake_run(2)
+        started = guardian.start_time(run.pid)
+        # its rounds are done and recorded as ending at the boundary; it is still closing when the request comes
+        (self.camp.root / "logs" / live.STOPPED_AT).write_text(json.dumps(
+            {"run": run.pid, "start": started, "after": "iter0009"}))
+        code, lines = self.stop("--after-round", "--wait")
+        self.assertEqual(code, 0)
+        self.assertEqual(lines[-1], f"run {run.pid} stopped at the round boundary, after iter0009")
+        self.assertFalse(live.stop_requested(self.camp))  # never taken, so withdrawn: not left for the next run
+
+    def test_wait_leaves_a_request_for_another_run_alone(self):
+        run = self.fake_run(1)
+        path = self.camp.root / "logs" / live.STOP_REQUEST
+
+        def next_request():  # once the run has gone, a request is made for the next run
+            run.wait()
+            path.write_text(json.dumps({"run": 1, "start": "Thu Jan  1 00:00:00 1970", "asked": "x"}))
+        threading.Thread(target=next_request).start()
+        code, _ = self.stop("--after-round", "--wait")
+        self.assertEqual(code, 1)
+        self.assertEqual(live._requested_run(self.camp), (1, "Thu Jan  1 00:00:00 1970"))
 
     def test_wait_follows_the_run_not_the_lock(self):
         run = self.fake_run(1)
@@ -214,6 +285,23 @@ class StopAfterRoundCliTest(unittest.TestCase):
             seen.update(json.loads((self.camp.root / "logs" / guardian.REGISTRY).read_text()))
         self.interrupted_run(body)
         self.assertIs(seen.get("stops_after_round"), True)
+
+    def test_the_run_names_itself_as_its_registry_does(self):
+        seen = {}
+
+        def fake_cycles(camp, n, **kw):
+            seen.update(kw, registry=json.loads((self.camp.root / "logs" / guardian.REGISTRY).read_text()))
+            raise KeyboardInterrupt
+        with mock.patch.object(cli, "run_cycles", fake_cycles), mock.patch.object(cli, "_live_ready", lambda c: None), \
+                redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+            cli.main(["run", "-c", str(self.camp.root), "--rounds", "1"])
+        self.assertEqual(seen["registry"]["orchestrator"], os.getpid())
+        self.assertTrue(seen["registry"]["orchestrator_start"])
+        self.assertEqual(seen.get("started"), seen["registry"]["orchestrator_start"])
+
+    def test_wait_alone_is_refused_with_no_run_recorded(self):
+        code, _ = self.stop("--wait")
+        self.assertEqual(code, 2)
 
     def test_wait_alone_is_refused(self):
         run = self.fake_run(60)

@@ -305,15 +305,16 @@ expect a campaign's first rounds to find its loopholes.
 - **Stopping at a round boundary:** `drsi stop -c NAME --after-round` asks the run to end without cutting an attempt
   short: the round under way finishes, its world is frozen and its dream step is taken (a dream, or the usual skip
   while too few worlds can inform one), and the run exits before it starts another. Use it to restart onto a new
-  release or new settings. The request (`logs/stop_after_round`) names the run, so no later run takes it, and a run
-  started by a drsi without this option is refused (it would never see the request: stop it with `drsi stop` once its
-  round is over). `--wait` follows that run until it has ended, however long the round takes, and reports what the
-  run itself recorded (`logs/stopped_after_round`): exit 0 if it stopped at the boundary, 1 if it ended some other
-  way first (the request is then withdrawn). A run that is stopped mid-round anyway records each attempt the stop cut
-  short as the loop's failure (`orchestrator_error`, `worker.stopped_by_run`), never its model's: a call the stop
-  ended commits no half build, a novelty check it interrupted gives no verdict, and a finished build it left unscored
-  stays recorded for `drsi rescore`. A call that failed on its own before the stop, and a verdict reached before it
-  (valid, not novel, out of scope), keep their records.
+  release or new settings. The request (`logs/stop_after_round`) names the run by its pid and start time, as its
+  registry does, so no later run takes it, and a run started by a drsi without this option is refused (it would never
+  see the request: stop it with `drsi stop` once its round is over). `--wait` follows that run until it has ended,
+  however long the round takes, and reports what the run itself recorded (`logs/stopped_after_round`): exit 0 if it
+  ended at a round boundary (as asked, or because its rounds were done), 1 if it ended some other way. A request the
+  run never took is withdrawn, not left for a later run. A run that is stopped mid-round anyway records each attempt
+  the stop cut short as the loop's failure (`orchestrator_error`, `worker.stopped_by_run`), never its model's: a call
+  the stop ended commits no half build, a novelty check it interrupted gives no verdict, and a finished build it left
+  unscored stays recorded for `drsi rescore`. A call that failed on its own before the stop, and a verdict reached
+  before it (valid, not novel, out of scope), keep their records.
 - **Rescoring:** when the scorer is corrected mid-campaign, `drsi rescore -c NAME --all` (or `--ids a,b`) runs the
   current scorer on each live attempt's own commit, as the loop scores it, keeps the old reading on the node
   (`artifacts.rescored`), judges every live outcome again against its parent's score, and updates the frozen round
