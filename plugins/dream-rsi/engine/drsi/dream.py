@@ -15,7 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .agent import limit_wait, wait_unless_stopping
+from .agent import limit_wait, stopped_by_limit, wait_unless_stopping
 from .guard import ALLOWED_MODULES
 from .question import POLICY_HASH_SEED
 from .replay import CURVES, SCORES, _run_once, evaluate_policy, resampled_reward
@@ -353,12 +353,18 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
     for m in range(0 if skipped else cfg["dream"]["M"]):
         with tempfile.TemporaryDirectory(prefix="drsi-dream-") as sb:
             sb = Path(sb)
-            (sb / "method.py").write_text(best_src)
-            (sb / "REPORT.md").write_text(render_report(best_rep, revisions))
+            def fresh():  # the sandbox as the developer is given it
+                for x in sb.iterdir():
+                    shutil.rmtree(x) if x.is_dir() and not x.is_symlink() else x.unlink()
+                (sb / "method.py").write_text(best_src)
+                (sb / "REPORT.md").write_text(render_report(best_rep, revisions))
+            fresh()
             res = developer(sb, build_prompt(cfg))
-            while not res.ok and getattr(res, "limited", False):  # refused for a usage limit: no revision was made
+            while stopped_by_limit(res):  # the limit's, not the revision's: wait, then ask again from a fresh sandbox
                 if not wait_unless_stopping(limit_wait(res)):
                     break
+                if getattr(res, "cut_off", False):
+                    fresh()
                 res = developer(sb, build_prompt(cfg))
             new_src = (sb / "method.py").read_text()
         if not res.ok:

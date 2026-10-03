@@ -70,7 +70,7 @@ def rescore(camp: Campaign, ids: set[str] | None = None, parallel: int = 1, log=
                 "gates": node.get("gates"), "raw_score": art.get("raw_score"), "scorer_summary": art.get("scorer_summary")})
             node.update(score=sc["score"], valid=sc["valid"], gates=sc["gates"], fail_class=sc["fail_class"])
             art["raw_score"] = sc.get("raw_score")
-            art["scorer_summary"] = str(sc.get("summary") or sc.get("error") or "")[:800]
+            art["scorer_summary"] = str(sc.get("summary") or sc.get("error") or "")[:4000]
         return fn
 
     old = {n["id"]: n.get("score") for n in todo}

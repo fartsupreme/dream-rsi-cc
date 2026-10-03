@@ -31,7 +31,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .agent import (LIMIT_MIN_WAIT_S, LIMIT_POLL_S, AgentResult, kill_all_children, limit_wait, refuse_if_stopping,
-                    register_child, unregister_child, wait_unless_stopping)
+                    register_child, stopped_by_limit, unregister_child, wait_unless_stopping)
 from .llm import LLMLimited
 from .dream import SEED_POLICY, run_dream
 from .families import load_families
@@ -175,6 +175,7 @@ class LiveRunner:
         self._fell_back: dict[str, tuple[str, str]] = {}  # attempt id -> (the model it fell back from, the phase)
         self._fallback_refused: dict[str, str] = {}  # attempt id -> a fallback that was refused as well
         self._limit_waits: dict[str, float] = {}  # attempt id -> seconds it waited out the account's usage limit
+        self._cut_offs: dict[str, int] = {}  # attempt id -> its calls a usage limit stopped after the model had worked
         objective = cfg["live"].get("objective")
         if objective is not None and (not isinstance(objective, str) or not objective.strip()):
             raise ValueError(f"live.objective must be text saying what the workspace scores, not {objective!r}")
@@ -320,16 +321,17 @@ class LiveRunner:
         except Exception as e:  # noqa: BLE001 - a crashed worker is a recorded attempt, not a lost round
             return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
 
-    def _call(self, path, system, nid: str | None = None) -> AgentResult:
+    def _call(self, path, system, nid: str | None = None, reset=None) -> AgentResult:
         """One worker call of an attempt. A call refused for a usage limit before the model ran is never a failed
         attempt: it runs on llm.worker_fallback when that can, and when no model the attempt may use can run (no
         fallback, the same model, or the fallback refused as well) the attempt waits for the earliest reset among the
         refusals, whatever their kind, and the call is made again, its own model first. A refusal's kind cannot say
         which models it binds (Claude Code reports the exceeded window that resets last), so none is trusted to. A
-        run that begins stopping ends the wait."""
+        call the limit cut off after the model had worked is treated the same, and `reset` (the caller's) undoes what
+        it did before the call is made again. A run that begins stopping ends the wait."""
         kills: list = []
         while True:
-            res, part, refusals, other = self._try_call(path, system, nid)
+            res, part, refusals, other = self._try_call(path, system, nid, reset)
             kills += part
             if not refusals:
                 break
@@ -343,34 +345,43 @@ class LiveRunner:
                     self._fallback_refused[nid] = other
                 break
             self._limit_waits[nid] = self._limit_waits.get(nid, 0.0) + secs
+            if any(getattr(r, "cut_off", False) for r in refusals) and reset is not None:
+                reset()  # the last call made worked before the limit stopped it
         if nid is not None:
             self._last_call[nid] = res  # an attempt that fails later still names its last call's transcript
             self._mem_kills.setdefault(nid, []).extend(kills)
         return res
 
-    def _try_call(self, path, system, nid: str | None) -> tuple[AgentResult, list, tuple, str | None]:
+    def _try_call(self, path, system, nid: str | None, reset=None) -> tuple[AgentResult, list, tuple, str | None]:
         """(the call's result, the memory-cap kills of every call made, the refusals when no model could run, the
         other model tried)."""
         model = self._models.get(nid)
         res = self._run_worker(path, system, model)
         kills = list(getattr(res, "mem_kills", None) or [])
-        if nid is None or res.ok or not getattr(res, "limited", False):
+        if nid is None or not stopped_by_limit(res):
             return res, kills, (), None
+        if getattr(res, "cut_off", False):
+            self._cut_offs[nid] = self._cut_offs.get(nid, 0) + 1
         current = model or self.default_model
         own = self._fell_back[nid][0] if nid in self._fell_back else current  # the model the attempt was given
         other = own if current != own else self.worker_fallback  # on the fallback, its own model is the other one
         if not other or other == current:
             return res, kills, (res,), None
-        # refused before the model ran (so nothing it did needs undoing): this call, and the rest of the attempt, run
-        # on the other model. The next attempt tries its own model again, so the model comes back when its limit
-        # resets or the account changes.
+        # stopped by the limit, before the model ran or after (what it did is undone first): this call, and the rest of
+        # the attempt, run on the other model. The next attempt tries its own model again, so the model comes back
+        # when its limit resets or the account changes.
         phase = "propose" if PROPOSE in system else "implement"
-        self.log(f"{nid}: {current} refused for its usage limit; the attempt continues on {other}")
+        how = "cut off by" if getattr(res, "cut_off", False) else "refused for"
+        self.log(f"{nid}: {current} {how} its usage limit; the attempt continues on {other}")
+        if getattr(res, "cut_off", False) and reset is not None:
+            reset()
         if phase == "propose":
             _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
         retry = self._run_worker(path, system, other)
         kills += getattr(retry, "mem_kills", None) or []
-        if retry.ok or not getattr(retry, "limited", False):
+        if getattr(retry, "cut_off", False):
+            self._cut_offs[nid] = self._cut_offs.get(nid, 0) + 1
+        if not stopped_by_limit(retry):
             if other != own:
                 self._fell_back[nid] = (current, phase)
             self._models[nid] = other  # back on its own model, the record keeps where the fallback took over
@@ -411,9 +422,14 @@ class LiveRunner:
                 if self.checker is None:
                     raise RuntimeError("live.require_check is on but no checker was given")
                 feedback = None
+                def fresh_proposal():  # a proposal call the limit cut off: nothing it did survives
+                    with self._git_lock:
+                        self.ws.recreate(nid, start)
+                    _clear(self.proposal_file(nid))
                 for _ in range(max(1, int(cfg["live"].get("max_proposals", 3)))):
                     _clear(self.proposal_file(nid))  # a stale proposal must never be judged again
-                    res = self._call(path, self.brief_propose(nid, parent, branch, path, map_text, feedback), nid)
+                    res = self._call(path, self.brief_propose(nid, parent, branch, path, map_text, feedback), nid,
+                                     reset=fresh_proposal)
                     with self._git_lock:
                         self.ws.recreate(nid, start)  # proposing builds nothing: nothing it did survives
                     proposal = self._read_proposal(nid, res) if res.ok else ""
@@ -430,7 +446,11 @@ class LiveRunner:
                     return self._finish(job, AgentResult(ok=True, session_id=res.session_id, secs=res.secs,
                                                          transcript=getattr(res, "transcript", None)), check,
                                         checks, not_novel=True, no_commit=start)
-            res = self._call(path, self.brief_implement(nid, parent, branch, path, check, map_text), nid)
+            def fresh_build():  # a build the limit cut off: the build is made again from the attempt's start
+                with self._git_lock:
+                    self.ws.recreate(nid, start)
+            res = self._call(path, self.brief_implement(nid, parent, branch, path, check, map_text), nid,
+                             reset=fresh_build)
             return self._finish(job, res, check, checks)
         except Exception as e:  # noqa: BLE001 - an orchestration failure says nothing about the idea
             try:
@@ -501,7 +521,7 @@ class LiveRunner:
             artifacts={"workspace": str(path), "branch": f"drsi/{nid}", "commit": commit, "changed": changed,
                        "out_of_scope": oos, "checks": checks, "raw_score": sc.get("raw_score"),
                        "outcome": outcome, "killed_by": killed_by,
-                       "scorer_summary": str(sc.get("summary") or sc.get("error") or "")[:800],
+                       "scorer_summary": str(sc.get("summary") or sc.get("error") or "")[:4000],
                        "self_reported_score": report.get("self_reported_score")},
             worker=self._worker_record(nid, res),
             ext={"round": self.round_id, "cell": cell, "proposal_sha": text_hash(proposal)}, **fields)
@@ -517,6 +537,8 @@ class LiveRunner:
             rec["fallback_refused"] = self._fallback_refused[nid]
         if self._limit_waits.get(nid):  # the time its calls waited for the account's usage limit to reset
             rec["waited_for_limit_s"] = round(self._limit_waits[nid])
+        if self._cut_offs.get(nid):  # calls the limit stopped after the model had worked, each undone and made again
+            rec["cut_off_by_limit"] = self._cut_offs[nid]
         if self._mem_kills.get(nid):  # the processes the memory cap killed in any of the attempt's calls
             rec["mem_kills"] = list(self._mem_kills[nid])
         return rec

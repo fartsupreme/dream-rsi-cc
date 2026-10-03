@@ -398,6 +398,8 @@ class AgentResult:
     limited: bool = False  # refused for the model's usage limit before the model ran (see _refused_up_front)
     limit_type: str | None = None  # when limited: the limit's kind as the stream names it (five_hour, seven_day, ...)
     limit_reset: int | None = None  # when limited: when it resets, in seconds since the epoch, if the stream says
+    cut_off: bool = False  # stopped by a usage limit after the model had worked (see _cut_off_by_limit): what it did
+    # is the caller's to undo before the call is made again; limit_type and limit_reset say which limit, as for limited
 
 
 class ClaudeAgent:
@@ -484,11 +486,12 @@ class ClaudeAgent:
         if err and tpath:
             err += f"; transcript {tpath}"
         limited = not ok and _refused_up_front(env, tpath)
-        info = (_last_usage_info(tpath) or {}) if limited and tpath else {}
+        cut_off = not ok and not limited and _cut_off_by_limit(env, tpath)
+        info = (_last_usage_info(tpath) or {}) if (limited or cut_off) and tpath else {}
         reset = info.get("resetsAt")
         return AgentResult(ok=ok, result_text=str(env.get("result") or ""), structured=env.get("structured_output"),
                            session_id=env.get("session_id"), secs=secs, error=err, transcript=tpath, mem_kills=kills,
-                           limited=limited, limit_type=info.get("rateLimitType"),
+                           limited=limited, cut_off=cut_off, limit_type=info.get("rateLimitType"),
                            limit_reset=int(reset) if isinstance(reset, (int, float)) and not isinstance(reset, bool)
                            else None)
 
@@ -504,6 +507,20 @@ def _refused_up_front(env: dict, tpath) -> bool:
     if tpath:
         return _last_usage_status(tpath) == "rejected"
     return env.get("api_error_status") == 429
+
+
+def _cut_off_by_limit(env: dict, tpath) -> bool:
+    """A call the usage limit stopped after the model had worked: its stream's last usage event says rejected (2026-10-02:
+    nine turns of a build, then the account's five-hour window, then an error result of status 429); without a stream,
+    an error result of status 429. A call that failed for another reason is not this."""
+    if tpath:
+        return _last_usage_status(tpath) == "rejected"
+    return env.get("api_error_status") == 429
+
+
+def stopped_by_limit(res) -> bool:
+    """Refused before the model ran, or cut off after it had worked: either way the call is the limit's, not the idea's."""
+    return not getattr(res, "ok", True) and bool(getattr(res, "limited", False) or getattr(res, "cut_off", False))
 
 
 def _last_usage_info(path) -> dict | None:

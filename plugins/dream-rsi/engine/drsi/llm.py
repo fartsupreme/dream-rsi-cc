@@ -24,8 +24,10 @@ class LLMLimited(LLMError):
 
 
 def _refused_before_work(env: dict) -> bool:
-    return (bool(env.get("is_error")) and env.get("api_error_status") == 429 and (env.get("num_turns") or 0) <= 1
-            and not (env.get("duration_api_ms") or 0) and not env.get("modelUsage"))
+    """An error result of status 429: refused for a usage limit, or cut off by one after some work. A call here is one
+    prompt that changes nothing, so either way it is made again once the limit resets (round 51: a limit crossed
+    after work was an orchestration failure)."""
+    return bool(env.get("is_error")) and env.get("api_error_status") == 429
 
 
 class ClaudeCLI:
