@@ -13,6 +13,9 @@
   the binary on the call's own PATH, its deadline is monotonic, and only args[0] as given counts. A worker whose
   `claude` never came back was recorded as the model's failure (agent_error); it is the loop's (orchestrator_error).
   A policy developer that could not be started ended the whole run with a traceback; it fails its revision.
+- Review (Grok): between linking npm's placeholder and setting its mode a spawn fails with EACCES, which is waited
+  out too; a stop that comes as the binary reappears ends the wait with the original error, not the stopping run's;
+  a missing working directory whose path happens to be the binary's (CPython then names that path) is not waited on.
 """
 import errno
 import json
@@ -102,6 +105,27 @@ class AgentTest(Base):
         with mock.patch.object(agent, "CLAUDE_GONE_WAIT_S", 0), self.assertRaises(OSError):
             self.run_agent(runner)
         self.assertEqual(len(runner.calls), 1)
+
+    def test_a_placeholder_not_yet_executable_is_waited_out_too(self):
+        runner = Runner(PermissionError(errno.EACCES, "Permission denied", "claude"))
+        res, lines = self.run_agent(runner)
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(len(runner.calls), 2)
+
+    def test_a_stop_as_the_binary_reappears_ends_the_wait_with_the_original_error(self):
+        runner = Runner(GONE)
+        with mock.patch.object(agent._STOPPING, "is_set", return_value=True), \
+                self.assertRaises(FileNotFoundError):
+            agent.run_claude(runner, ["claude", "-p"])
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_a_missing_working_directory_named_like_the_binary_is_not_waited_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            where = os.path.join(d, "claude")  # neither the binary nor the directory exists
+            runner = Runner(FileNotFoundError(2, "No such file or directory", where))
+            with self.assertRaises(FileNotFoundError):
+                agent.run_claude(runner, [where, "-p"], cwd=where)
+        self.assertEqual((len(runner.calls), self.waits), (1, []))
 
     def test_a_missing_working_directory_is_not_waited_on(self):
         runner = Runner(FileNotFoundError(2, "No such file or directory", "/no/such/checkout"))

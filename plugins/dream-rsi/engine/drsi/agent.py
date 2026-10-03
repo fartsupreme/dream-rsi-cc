@@ -357,25 +357,28 @@ def run_claude(runner, args, **kw):
         try:
             return runner(args, **kw)
         except OSError as e:
-            if not _being_replaced(e, args[0]) or not _binary_back(args[0], deadline, path):
+            if not _being_replaced(e, args[0], kw.get("cwd")) or not _binary_back(args[0], deadline, path):
                 raise
 
 
-def _being_replaced(e: OSError, binary: str) -> bool:
+def _being_replaced(e: OSError, binary: str, cwd=None) -> bool:
     """Starting `binary` failed as it does while it is being replaced: not there, or not executable yet (npm's
-    placeholder; ETXTBSY where a system reports a file still being written). CPython names args[0] in each."""
-    return e.errno in (errno.ENOENT, errno.ETXTBSY, errno.ENOEXEC) and e.filename == binary
+    placeholder, EACCES before its mode is set and ENOEXEC after; ETXTBSY where a system reports a file still being
+    written). CPython names args[0] in each; a missing working directory is named by its own path, so one whose path
+    is the binary's is that error, not this."""
+    return (e.errno in (errno.ENOENT, errno.EACCES, errno.ETXTBSY, errno.ENOEXEC) and e.filename == binary
+            and not (cwd and not os.path.isdir(cwd)))
 
 
 def _binary_back(binary: str, deadline: float, path: str | None = None) -> bool:
-    """True once `binary` is found on `path` twice 2 s apart (an update in progress has placed it, not still placing it)
-    before `deadline`; False if it is not, or the run begins stopping."""
+    """True once `binary` is found on `path` twice 2 s apart before `deadline` (a placeholder found that way fails again
+    and is waited out again); False if it is not, or the run begins stopping."""
     seen = 0
     while seen < 2:
         seen = seen + 1 if shutil.which(binary, path=path) else 0
         if seen < 2 and (time.monotonic() >= deadline or _STOPPING.wait(2)):
             return False
-    return True
+    return not _STOPPING.is_set()
 
 
 def run_group(args, input=None, capture_output=True, text=True, timeout=None, cwd=None, env=None,
