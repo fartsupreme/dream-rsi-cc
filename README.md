@@ -302,6 +302,13 @@ expect a campaign's first rounds to find its loopholes.
   workspace that cannot be read counts as "unknown", never "dead" or "empty", and the record stays for the next
   attempt. A new `drsi run` also finishes a dead run's cleanup first, and will not start over a record it could not
   finish.
+- **Stopping at a round boundary:** `drsi stop -c NAME --after-round` asks the run to end without cutting an attempt
+  short: the round under way finishes, its world is frozen and its dream runs, and the run exits before it starts
+  another (`--wait` returns once it has; a request the run never took, because it ended some other way first, is
+  withdrawn). Use it to restart onto a new release or new settings. A run that is stopped mid-round anyway records
+  each attempt still running as the loop's failure (`orchestrator_error`, `worker.stopped_by_run`), never its
+  model's, and a build its stop cut short is not committed as the attempt's work; an attempt that was valid, judged
+  not novel or out of scope keeps its record.
 - **Rescoring:** when the scorer is corrected mid-campaign, `drsi rescore -c NAME --all` (or `--ids a,b`) runs the
   current scorer on each live attempt's own commit, as the loop scores it, keeps the old reading on the node
   (`artifacts.rescored`), judges every live outcome again against its parent's score, and updates the frozen round

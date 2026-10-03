@@ -432,7 +432,8 @@ def cmd_baseline(a) -> int:
 
 def cmd_stop(a) -> int:
     """End a campaign's run through its own cleanup (SIGTERM), then SIGKILL after the grace period; once the run
-    lock is free, the run's guardian (or, with no guardian left, this command) kills whatever the run left."""
+    lock is free, the run's guardian (or, with no guardian left, this command) kills whatever the run left. With
+    --after-round, only ask the run to end at its next round boundary (see _ask_after_round)."""
     from . import guardian
     camp = resolve_campaign(a.campaign)
     path = camp.root / "logs" / guardian.REGISTRY
@@ -450,6 +451,8 @@ def cmd_stop(a) -> int:
                 return False
             time.sleep(0.2)
         return True
+    if a.after_round:
+        return _ask_after_round(a, camp, path, run, started)
     if guardian.run_lock_held(path):
         if guardian.alive(run, started) is not True:
             print(f"the campaign's run lock is held, but process {run} cannot be confirmed as its run; "
@@ -593,6 +596,34 @@ def _run_lock(camp: Campaign):
         fh.close()
         raise SystemExit("drsi: another `drsi run` or `drsi baseline` is active on this campaign")
     return fh
+
+
+def _ask_after_round(a, camp, path, run, started) -> int:
+    """`drsi stop --after-round`: the round under way finishes (its world frozen, its dream run) and the run exits
+    before it starts another, so a restart kills no attempt half done (round 53). With --wait, return once the run has
+    ended; a request the run never took (it ended some other way first) is withdrawn, not left for the next run."""
+    from . import guardian
+    from .live import request_stop_after_round, take_stop_request
+    if not guardian.run_lock_held(path):
+        print("no run is running for this campaign; nothing to ask")
+        return 0
+    if guardian.alive(run, started) is not True:
+        print(f"the campaign's run lock is held, but process {run} cannot be confirmed as its run; nothing was asked")
+        return 1
+    request_stop_after_round(camp)
+    current = camp.root / "logs" / "current_round"
+    now = current.read_text().strip() if current.exists() else "the round under way"
+    print(f"run {run} stops at the round boundary: {now} finishes, freezes its world and runs its dream, and no "
+          "further round starts")
+    if not a.wait:
+        return 0
+    while guardian.run_lock_held(path):
+        time.sleep(2)
+    if take_stop_request(camp):
+        print(f"run {run} ended before its round boundary; the request is withdrawn")
+    else:
+        print(f"run {run} stopped at the round boundary")
+    return 0
 
 
 def cmd_run(a) -> int:
@@ -755,6 +786,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = with_c(sub.add_parser("stop", help="stop a running `drsi run` and everything it started"))
     s.add_argument("--grace", type=float, default=30.0, help="seconds the run gets to clean up after itself")
+    s.add_argument("--after-round", action="store_true",
+                   help="let the round under way finish (its world and dream), then end the run before the next")
+    s.add_argument("--wait", action="store_true", help="with --after-round: return once the run has ended")
     s.set_defaults(fn=cmd_stop)
     s = with_c(sub.add_parser("rescore", help="score recorded live attempts again with the current scorer"))
     s.add_argument("--ids", help="comma-separated attempt ids")

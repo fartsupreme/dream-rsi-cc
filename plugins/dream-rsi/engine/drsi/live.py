@@ -41,7 +41,7 @@ from . import offload
 from .novelty import render_check, text_hash
 from .question import POLICY_HASH_SEED, ROOT, IllegalBatch, QuestionBase
 from .scorer import run_scorer
-from .store import Campaign, _atomic_write, make_node
+from .store import Campaign, _atomic_write, make_node, utcnow
 from .workspace import Workspaces, out_of_scope
 from .worlds import comparable, freeze_world, informative, load_worlds, with_cells, world_from_tree
 
@@ -192,6 +192,8 @@ class LiveRunner:
         self._limit_waits: dict[str, float] = {}  # attempt id -> seconds it waited out the account's usage limit
         self._cut_offs: dict[str, int] = {}  # attempt id -> its calls a usage limit stopped after the model had worked
         self._stopped_waiting: set[str] = set()  # attempts the run's stop found waiting out a usage limit
+        self._aborting = False  # set once a batch is being stopped: what ends after that is the stop's doing
+        self._stopped_by_run: set[str] = set()  # attempts the run's stop cut short
         self._last: dict[str, AgentResult] = {}  # attempt id -> the result of its latest call, while its calls run
         objective = cfg["live"].get("objective")
         if objective is not None and (not isinstance(objective, str) or not objective.strip()):
@@ -533,6 +535,8 @@ class LiveRunner:
         parent = self.camp.tree.get(parent_id) if parent_id else None
         start = self.ws.start_for((parent or {}).get("artifacts", {}).get("commit"))
         nested: list[str] = []
+        if self._aborting and not res.ok and no_commit is None:  # the run's stop cut the call short: a half build
+            no_commit = start  # is not the attempt's work
         if no_commit is not None:  # nothing was built: the attempt owns no code of its own
             commit, changed, links, gitlinks = no_commit, [], [], []
         else:
@@ -566,6 +570,14 @@ class LiveRunner:
             sc = self._score(commit, nid)
             fields = {"score": sc["score"], "valid": sc["valid"], "gates": sc["gates"],
                       "fail_class": sc["fail_class"]}
+        text = {"summary": str(report.get("summary", ""))[:1500], "notes": str(report.get("notes", ""))[:800],
+                "worker_error": res.error[:500]}
+        if self._aborting and not fields["valid"] and fields["fail_class"] not in ("not_novel", "out_of_scope"):
+            # ended after the run began stopping, its call or its scoring killed with the run: the loop's failure,
+            # never its model's (round 53: each restart recorded its next round's first six calls as agent_error)
+            self._stopped_by_run.add(nid)
+            fields = {"score": None, "valid": False, "gates": {}, "fail_class": "orchestrator_error"}
+            text["orchestrator_error"] = "the run was stopped while this attempt ran"
         if no_commit is not None and not cfg["workspace"].get("keep_worktrees") and path.exists():
             with self._git_lock:
                 self.ws.remove(path)
@@ -574,8 +586,7 @@ class LiveRunner:
         return make_node(
             id=nid, parent=parent_id, source="live", proposal=_clip(proposal, 8000),
             fingerprint={"outcome": outcome, "killed_by": killed_by},
-            text={"summary": str(report.get("summary", ""))[:1500], "notes": str(report.get("notes", ""))[:800],
-                  "worker_error": res.error[:500]},
+            text=text,
             artifacts={"workspace": str(path), "branch": f"drsi/{nid}", "commit": commit, "changed": changed,
                        "out_of_scope": oos, "checks": checks, "raw_score": sc.get("raw_score"),
                        "outcome": outcome, "killed_by": killed_by,
@@ -599,6 +610,8 @@ class LiveRunner:
             rec["cut_off_by_limit"] = self._cut_offs[nid]
         if nid in self._stopped_waiting:  # the run's stop found it waiting out a usage limit: its end is the stop's
             rec["stopped_in_limit_wait"] = True
+        if nid in self._stopped_by_run:  # the run's stop cut it short (round 53)
+            rec["stopped_by_run"] = True
         if self._mem_kills.get(nid):  # the processes the memory cap killed in any of the attempt's calls
             rec["mem_kills"] = list(self._mem_kills[nid])
         return rec
@@ -652,7 +665,9 @@ class LiveRunner:
             nodes = [next(done) if isinstance(s, tuple) else s for s in slots]  # probe_batch pairs by position
         except BaseException:
             # Ctrl-C (or any abort): workers and scorers run in their own process groups, so stop them
-            # explicitly instead of waiting hours for them to finish.
+            # explicitly instead of waiting hours for them to finish. The attempts still running end failed because of
+            # this, not because of their models: _finish records them as the loop's (round 53).
+            self._aborting = True
             kill_all_children()
             pool.shutdown(wait=False, cancel_futures=True)
             raise
@@ -813,6 +828,29 @@ def _has_signal(worlds: list[dict]) -> bool:
     return any(any(n.get("valid") and n.get("score") is not None for n in w["nodes"]) for w in worlds)
 
 
+STOP_REQUEST = "stop_after_round"  # logs/<this>: `drsi stop --after-round` asks the run to end at a round boundary
+
+
+def request_stop_after_round(camp: Campaign) -> None:
+    """Ask the campaign's run to end once the round under way has frozen its world and run its dream (round 53)."""
+    path = camp.root / "logs" / STOP_REQUEST
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(utcnow() + "\n")
+
+
+def stop_requested(camp: Campaign) -> bool:
+    return (camp.root / "logs" / STOP_REQUEST).exists()
+
+
+def take_stop_request(camp: Campaign) -> bool:
+    """Withdraw the request; True if there was one."""
+    try:
+        (camp.root / "logs" / STOP_REQUEST).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=None, progress=None) -> dict:
     say = progress or (lambda msg: None)
     policy_dir = camp.root / "policy"
@@ -820,7 +858,11 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
     if not (policy_dir / "method.py").exists():
         (policy_dir / "method.py").write_text(SEED_POLICY.read_text())
     rounds = []
+    take_stop_request(camp)  # one left by an earlier run is not this run's to take
     for _ in range(n):
+        if rounds and take_stop_request(camp):  # `drsi stop --after-round`: the last round's world and dream are done
+            say(f"{rounds[-1]['round_id']}: stopping at the round boundary, as `drsi stop --after-round` asked")
+            break
         round_id = next_round_id(camp)
         (camp.root / "logs").mkdir(parents=True, exist_ok=True)
         (camp.root / "logs" / "current_round").write_text(round_id)  # prune leaves this round alone while it runs
@@ -844,4 +886,6 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
                 f"(reward {d['incumbent_reward']:.4f} -> {d['best_reward']:.4f})")
         rounds.append(summary | {"dream": {"deployed": d["deployed"], "version": d["version"],
                                            "incumbent_reward": d["incumbent_reward"], "best_reward": d["best_reward"]}})
+    else:
+        take_stop_request(camp)  # the run ends at a round boundary anyway: a request made in its last round is met
     return {"rounds": rounds}
