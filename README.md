@@ -323,38 +323,38 @@ expect a campaign's first rounds to find its loopholes.
 - **A model at its usage limit:** with `llm.worker_fallback` set to a model, a worker call refused for its model's
   usage limit before the model ran (its result shows no turn of work, one turn and no API time, and the stream's last
   usage event says `rejected`; it comes back within seconds) is made again on the fallback, and the rest of that
-  attempt runs on it. A limit crossed after work is an ordinary failure, so nothing half done is carried into a retry,
-  and a short-term rate limit Claude Code retried does not count. The attempt records the model that did the rest of
-  the work, the one it was given (`worker.fell_back_from`) and the phase the fallback took over (`worker.fell_back_in`:
-  after a proposal on its own model, the build may be the fallback's); a fallback refused as well is not retried: the
-  attempt keeps its own model and its own refused call (session, transcript, error), and names the refused fallback
-  in `worker.fallback_refused`. Every attempt tries its own model first, so a model whose limit has reset, or whose
-  account has changed, is back at once. A call on the fallback that is refused in turn tries the attempt's own
-  model; if that runs, the attempt goes on there (`worker.model` then equals `fell_back_from`, and `fell_back_in`
-  names the phase the fallback took). The fallback covers worker calls only (not the classifier, the judge or the
-  policy developer) and compares model names as written: give it in the same form as the workers' models
-  (`worker_models`, or `worker_model` or `model` when that list is unset). Every call keeps its own transcript in the
-  attempt's folder, the refused one included.
+  attempt runs on it. A call the limit cuts off after work goes to the fallback the same way, once what it did is
+  undone (see the next point), and a short-term rate limit Claude Code retries away does not count. The attempt
+  records the model that did the rest of the work, the one it was given (`worker.fell_back_from`) and the phase the
+  fallback took over (`worker.fell_back_in`: after a proposal on its own model, the build may be the fallback's); a
+  fallback refused as well is not retried: the attempt keeps its own model and its own refused call (session,
+  transcript, error), and names the refused fallback in `worker.fallback_refused`. Every attempt tries its own model
+  first, so a model whose limit has reset, or whose account has changed, is back at once. A call on the fallback that
+  is refused in turn tries the attempt's own model; if that runs, the attempt goes on there (`worker.model` then
+  equals `fell_back_from`, and `fell_back_in` names the phase the fallback took). The fallback covers worker calls
+  only (not the classifier, the judge or the policy developer) and compares model names as written: give it in the
+  same form as the workers' models (`worker_models`, or `worker_model` or `model` when that list is unset). Every
+  call keeps its own transcript in the attempt's folder, the refused one included.
 - **The account at its usage limit:** a call refused for a usage limit before the model ran is never a failed
   attempt. When no model the attempt may use can run (no fallback, the fallback is the same model, or it is refused
   as well), the attempt waits for the earliest reset the refusals name, checking again at least every 10 minutes (so
-  switching the account ends the wait sooner), then makes the call again, its own model first; the run log says
-  when it will try, and the attempt records the time in `worker.waited_for_limit_s`. The limit's kind does not
-  decide this: Claude Code names one of `five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`,
+  switching the account ends the wait sooner), then makes the call again, its own model first; the run log says when
+  it will try, and the attempt records the time in `worker.waited_for_limit_s`. The limit's kind does not decide
+  this: Claude Code names one of `five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`,
   `seven_day_overage_included` and `overage`, or none, and reports the exceeded window that resets last, so a kind
   cannot say which models a refusal binds. A model with a limit of its own and no fallback therefore holds its batch
   until the limit resets; set `llm.worker_fallback` to keep the other seats working meanwhile. The novelty check
-  waits the same way when its calls are refused, and so does the dream's policy developer. A run that is stopped
-  ends every wait. Without this, a limit turned every call of a round into a recorded failure within seconds, and
-  the loop ran through rounds doing no work. A call the limit cuts off after the model has worked (an error result
-  of status 429, with the stream's last usage event rejected or Claude Code's synthetic `rate_limit` message) is
-  treated the same, once what it did is undone: a build is made again on a
-  fresh checkout at the attempt's start, a proposal on a fresh checkout, and what the call left in the attempt's
-  proposal directory is cleared (the accepted proposal kept for a build); the policy developer is asked again in a
-  sandbox reset to the policy it was given. The attempt counts these calls in `worker.cut_off_by_limit`. Claude Code
-  retries a 429 that clears within a minute itself and ends a call on any other with the same message, a usage
-  limit's or not, so a call stopped after work is made again at most three times and then its failure stands: a
-  usage limit stops a call once a window, and a 429 that keeps coming is something else. A refusal before any work is
+  waits the same way when its calls are refused, and so does the dream's policy developer. A run that is stopped ends
+  every wait. Without this, a limit turned every call of a round into a recorded failure within seconds, and the loop
+  ran through rounds doing no work. A call the limit cuts off after the model has worked (an error result of status
+  429, with the stream's last usage event rejected or Claude Code's synthetic `rate_limit` message) is treated the
+  same, once what it did is undone: a build is made again on a fresh checkout at the attempt's start, a proposal on a
+  fresh checkout, and what the call left in the attempt's proposal directory is cleared (the accepted proposal kept
+  for a build); the policy developer is asked again in a sandbox reset to the policy it was given. The attempt counts
+  these calls in `worker.cut_off_by_limit`. Claude Code retries a 429 that clears within a minute itself and ends a
+  call on any other with the same message, a usage limit's or not, so the attempt waits out a call stopped after work
+  at most three times (with a fallback, each wait follows a try on both models) and then its failure stands: a usage
+  limit stops a call once a window, and a 429 that keeps coming is something else. A refusal before any work is
   waited out however long the limit lasts. A run stopped during such a wait undoes the cut-off call too, so its half
   work is never recorded as the attempt's, and the attempt records `worker.stopped_in_limit_wait`. The novelty
   check's calls are single prompts that change nothing, so a usage limit there is waited out the same way (a call
