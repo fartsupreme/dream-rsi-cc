@@ -20,14 +20,16 @@ class LLMError(RuntimeError):
 
 
 class LLMLimited(LLMError):
-    """The call was refused for a usage limit before the model ran (a 429 error result with no work done)."""
+    """The call was stopped by a usage limit, before or after the model worked (see _refused_before_work)."""
 
 
 def _refused_before_work(env: dict) -> bool:
-    """An error result of status 429: refused for a usage limit, or cut off by one after some work. A call here is one
-    prompt that changes nothing, so either way it is made again once the limit resets (round 51: a limit crossed
-    after work was an orchestration failure)."""
-    return bool(env.get("is_error")) and env.get("api_error_status") == 429
+    """An error result of status 429 that is not a short-term rate_limit_error: refused for a usage limit, or cut off
+    by one after some work. A call here is one prompt that changes nothing, so either way it is made again once the
+    limit resets (round 51: a limit crossed after work was an orchestration failure). A short-term rate limit stays an
+    ordinary error, tried again at once."""
+    return (bool(env.get("is_error")) and env.get("api_error_status") == 429
+            and env.get("api_error") != "rate_limit_error")
 
 
 class ClaudeCLI:

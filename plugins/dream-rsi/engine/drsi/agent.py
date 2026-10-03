@@ -510,12 +510,25 @@ def _refused_up_front(env: dict, tpath) -> bool:
 
 
 def _cut_off_by_limit(env: dict, tpath) -> bool:
-    """A call the usage limit stopped after the model had worked: its stream's last usage event says rejected (2026-10-02:
-    nine turns of a build, then the account's five-hour window, then an error result of status 429); without a stream,
-    an error result of status 429. A call that failed for another reason is not this."""
+    """A call the usage limit stopped after the model had worked (2026-10-02: nine turns of a build, then the account's
+    five-hour window): an error result of status 429 that is not a short-term rate_limit_error, with the stream's last
+    usage event rejected or Claude Code's synthetic rate_limit message; without a stream, the result alone. A call that
+    failed for another reason is not this, whatever usage event came before (review of round 51)."""
+    if not (env.get("is_error") and env.get("api_error_status") == 429) or env.get("api_error") == "rate_limit_error":
+        return False
     if tpath:
-        return _last_usage_status(tpath) == "rejected"
-    return env.get("api_error_status") == 429
+        return _last_usage_status(tpath) == "rejected" or _limit_message(tpath)
+    return True
+
+
+def _limit_message(path) -> bool:
+    """Claude Code's synthetic assistant message for a usage limit (error "rate_limit") is in the stream."""
+    for line in _lines(path):
+        if '"rate_limit"' in line:
+            ev = _json(line)
+            if ev is not None and ev.get("type") == "assistant" and ev.get("error") == "rate_limit":
+                return True
+    return False
 
 
 def stopped_by_limit(res) -> bool:
