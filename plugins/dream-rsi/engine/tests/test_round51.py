@@ -354,6 +354,33 @@ class CapTest(Base):
         self.assertEqual(len(waits), 6)
 
 
+class ResetFailsTest(Base):
+    def test_a_reset_that_fails_before_the_fallback_leaves_the_cut_off_call_on_the_record(self):
+        camp = self.campaign({"worker_models": ["fable"], "worker_fallback": "opus"})
+
+        def run(workspace, prompt, system, model=None):
+            if "PHASE: PROPOSE" in system:
+                return AgentResult(ok=True, transcript="/x/propose.jsonl", structured={
+                    "proposal": "an idea", "summary": "", "self_reported_score": None, "notes": ""})
+            return AgentResult(ok=False, error="cut off", cut_off=True, limit_type="five_hour",
+                               transcript="/x/build.jsonl", mem_kills=[{"pid": 7, "rss_gb": 2.5}])
+        r = LiveRunner(camp, run, indexer=lambda ids: None, round_id="iter0001", checker=fixed_checker("novel"))
+        real, n = r.ws.recreate, {"calls": 0}
+
+        def recreate(*a, **k):
+            n["calls"] += 1
+            if n["calls"] > 1:  # the first is the proposal's; the second is the build's reset before the fallback
+                raise OSError("git worktree add failed")
+            return real(*a, **k)
+        with mock.patch.object(r.ws, "recreate", side_effect=recreate), \
+                mock.patch.object(live, "wait_unless_stopping", return_value=True):
+            out = r.run_batch([f"{ROOT}0"])
+        node = camp.tree.get(out[0]["id"])
+        self.assertEqual(node.get("fail_class"), "orchestrator_error")
+        self.assertEqual(node["worker"].get("transcript"), "/x/build.jsonl")
+        self.assertEqual(node["worker"].get("mem_kills"), [{"pid": 7, "rss_gb": 2.5}])
+
+
 class CheckCapTest(Base):
     def run_checked(self, raises):
         """The check's calls raise `raises` in order, then give a novel verdict."""

@@ -417,7 +417,12 @@ class LiveRunner:
         how = "cut off by" if getattr(res, "cut_off", False) else "refused for"
         self.log(f"{nid}: {current} {how} its usage limit; the attempt continues on {other}")
         if getattr(res, "cut_off", False) and reset is not None:
-            reset()
+            try:
+                reset()
+            except BaseException:  # the record still names the cut-off call and what the memory cap killed in it
+                self._last[nid] = res
+                self._mem_kills.setdefault(nid, []).extend(kills)
+                raise
         if phase == "propose":
             _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
         retry = self._run_worker(path, system, other)
