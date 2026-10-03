@@ -11,11 +11,18 @@
 - A worker started its offload helper with a shell `&` inside a background command; the `&` cut it loose from the
   worker's session. The brief says to start it with the background parameter and no `&` of its own.
 - Review (Opus): the cut-off read ignored the result, so a call that failed otherwise after a rejected usage event was
-  made again until the window reset; a cut-off needs an error result of status 429 that is not a short-term
-  rate_limit_error, and either the rejected event or Claude Code's synthetic rate_limit message. A short-term
-  rate_limit_error is again an ordinary error to the novelty check (tried again at once), not a 10-minute wait. A stop
-  during the wait committed the cut-off build's half work; the reset now runs first and the record says the attempt
-  was stopped in a limit wait. The reset also clears what the cut-off call left in the attempt's proposal directory.
+  made again until the window reset; a cut-off needs an error result of status 429, and either the rejected event or
+  Claude Code's synthetic rate_limit message. A stop during the wait committed the cut-off build's half work; the
+  reset now runs first and the record says the attempt was stopped in a limit wait. The reset also clears what the
+  cut-off call left in the attempt's proposal directory.
+- Review (Grok): nothing bounded how often a call cut off after work was made again, so a 429 after work that never
+  cleared (not a usage limit: one cuts a call off once a window) made the build, the dream's revision or the novelty
+  check again every few minutes until the run stopped. A call cut off after work is made again at most three times,
+  then its failure stands; a refusal before any work is still waited out however long the limit lasts. Claude Code
+  2.1.288 retries a 429 that clears within a minute itself and ends a call on any other with the same synthetic
+  rate_limit message and no api_error, a usage limit's or not: the short-term rate_limit_error the Opus review set
+  apart never reaches a result, so that exception is gone and the cap bounds a 429 that keeps coming. `drsi check`
+  stopped by a usage limit printed a traceback; it now says so and exits 7, with no verdict.
 - The scorer's summary was kept to 800 characters, which lost the per-margin lines a reading turns on. It is kept to
   4000.
 """
@@ -94,10 +101,15 @@ class ShapeTest(ResultTest):
             ev[-1] = dict(ev[-1], **result)
             self.assertFalse(self.run_agent(ev).cut_off, result)
 
-    def test_a_short_term_rate_limit_is_not_a_cut_off(self):
+    def test_any_429_claude_code_did_not_retry_away_is_one(self):
+        # Claude Code 2.1.288 retries a 429 that clears within a minute itself; any other ends the call with its
+        # synthetic rate_limit message and no api_error, a usage limit's or not, so it is made again (a bounded number
+        # of times: CapTest), never recorded as the idea's failure at once
         ev = cut_off_stream()
-        ev[-1] = dict(ev[-1], api_error="rate_limit_error")
-        self.assertFalse(self.run_agent(ev).cut_off)
+        ev[3]["rate_limit_info"]["status"] = "allowed"
+        ev[-1] = dict(ev[-1], result="API Error: Request rejected (429) \u00b7 this may be a temporary capacity issue.")
+        self.assertNotIn("api_error", ev[-1])
+        self.assertTrue(self.run_agent(ev).cut_off)
 
     def test_a_cut_off_without_the_rejected_event_is_still_one(self):
         ev = cut_off_stream()
@@ -225,17 +237,19 @@ class CheckTest(unittest.TestCase):
         with self.assertRaises(LLMLimited):
             ClaudeCLI(model="opus", runner=runner, cwd="/tmp").json("p", {"type": "object"})
 
-    def test_a_short_term_rate_limit_is_an_ordinary_error_tried_again_at_once(self):
-        outs = [json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429,
-                            "api_error": "rate_limit_error", "num_turns": 2, "duration_api_ms": 900,
-                            "result": "API Error: 429 rate_limit_error"}),
-                json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "{}",
-                            "structured_output": {"ok": 1}})]
+    def test_a_429_is_waited_out_never_tried_again_at_once(self):
+        # what Claude Code could not retry away within a minute is not tried again at once: the caller waits
+        out = json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429,
+                          "num_turns": 1, "duration_api_ms": 0, "modelUsage": {},
+                          "result": "API Error: Request rejected (429) \u00b7 this may be a temporary capacity issue."})
+        calls = []
 
         def runner(args, **kw):
-            o = outs.pop(0)
-            return subprocess.CompletedProcess(args, 1 if "is_error\": true" in o else 0, stdout=o, stderr="")
-        self.assertEqual(ClaudeCLI(model="opus", runner=runner, cwd="/tmp").json("p", {"type": "object"}), {"ok": 1})
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 1, stdout=out, stderr="")
+        with self.assertRaises(LLMLimited):
+            ClaudeCLI(model="opus", runner=runner, cwd="/tmp").json("p", {"type": "object"})
+        self.assertEqual(len(calls), 1)
 
 
 class DreamTest(unittest.TestCase):
@@ -299,6 +313,140 @@ class SummaryCapTest(Base):
         with mock.patch.object(rescore_mod, "run_scorer", side_effect=scorer):
             rescore_mod.rescore(camp, ids={nid})
         self.assertEqual(camp.tree.get(nid)["artifacts"]["scorer_summary"], long)
+
+
+class CapTest(Base):
+    def test_a_call_cut_off_again_and_again_is_made_again_at_most_three_times(self):
+        seen = []
+        node, waits = self.run_one({"worker_models": ["opus"]}, {("opus", "implement"): 10}, seen)
+        self.assertFalse(node["valid"])
+        self.assertEqual(node.get("fail_class"), "agent_error")
+        self.assertEqual(len([x for x in seen if x[0] == "implement"]), 4)
+        self.assertEqual(len(waits), 3)
+        self.assertEqual(node["worker"].get("cut_off_by_limit"), 4)
+
+    def test_three_cut_offs_are_still_waited_out(self):
+        seen = []
+        node, waits = self.run_one({"worker_models": ["opus"]}, {("opus", "implement"): 3}, seen)
+        self.assertTrue(node["valid"], node.get("fail_class"))
+        self.assertEqual(len(waits), 3)
+
+    def test_a_refusal_before_work_is_waited_out_however_often(self):
+        camp = self.campaign({"worker_models": ["opus"]})
+        n = {"refused": 0}
+
+        def run(workspace, prompt, system, model=None):
+            if "PHASE: PROPOSE" in system:
+                return AgentResult(ok=True, structured={"proposal": "an idea", "summary": "", "self_reported_score": None,
+                                                        "notes": ""})
+            if n["refused"] < 6:
+                n["refused"] += 1
+                return AgentResult(ok=False, error="refused", limited=True, limit_type="seven_day")
+            workspace.joinpath("value.txt").write_text("2\n")
+            return AgentResult(ok=True, structured={"proposal": "p", "summary": "s", "self_reported_score": None,
+                                                    "notes": ""})
+        r = LiveRunner(camp, run, indexer=lambda ids: None, round_id="iter0001", checker=fixed_checker("novel"))
+        waits = []
+        with mock.patch.object(live, "wait_unless_stopping", side_effect=lambda s: waits.append(s) or True):
+            out = r.run_batch([f"{ROOT}0"])
+        node = camp.tree.get(out[0]["id"])
+        self.assertTrue(node["valid"], node.get("fail_class"))
+        self.assertEqual(len(waits), 6)
+
+
+class CheckCapTest(Base):
+    def run_checked(self, raises):
+        """The check's calls raise `raises` in order, then give a novel verdict."""
+        camp = self.campaign({"worker_models": ["opus"]})
+        calls, novel = [], fixed_checker("novel")
+
+        def checker(proposal, nid):
+            calls.append(nid)
+            if len(calls) <= len(raises):
+                raise raises[len(calls) - 1]
+            return novel(proposal, nid)
+
+        def run(workspace, prompt, system, model=None):
+            if "PHASE: PROPOSE" in system:
+                return AgentResult(ok=True, structured={"proposal": "an idea", "summary": "", "self_reported_score": None,
+                                                        "notes": ""})
+            workspace.joinpath("value.txt").write_text("2\n")
+            return AgentResult(ok=True, structured={"proposal": "p", "summary": "s", "self_reported_score": None,
+                                                    "notes": ""})
+        r = LiveRunner(camp, run, indexer=lambda ids: None, round_id="iter0001", checker=checker)
+        waits = []
+        with mock.patch.object(live, "wait_unless_stopping", side_effect=lambda s: waits.append(s) or True):
+            out = r.run_batch([f"{ROOT}0"])
+        return camp.tree.get(out[0]["id"]), calls, waits
+
+    def test_a_check_stopped_after_work_again_and_again_gives_up(self):
+        node, calls, waits = self.run_checked([LLMLimited("stopped after work", worked=True) for _ in range(10)])
+        self.assertFalse(node["valid"])
+        self.assertEqual(node.get("fail_class"), "orchestrator_error")
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(waits), 3)
+
+    def test_a_check_refused_before_work_waits_however_often(self):
+        node, calls, waits = self.run_checked([LLMLimited("refused") for _ in range(6)])
+        self.assertTrue(node["valid"], node.get("fail_class"))
+        self.assertEqual(len(waits), 6)
+
+    def test_the_cli_says_whether_a_stopped_call_had_worked(self):
+        after = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429, "num_turns": 4,
+                 "duration_api_ms": 51000, "modelUsage": {"opus": {"inputTokens": 3}}, "result": "session limit"}
+        before = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429, "num_turns": 1,
+                  "duration_api_ms": 0, "modelUsage": {}, "result": "session limit"}
+        for env, worked in ((after, True), (before, False)):
+            def runner(args, _result=env, **kw):
+                return subprocess.CompletedProcess(args, 1, stdout=json.dumps(_result), stderr="")
+            with self.assertRaises(LLMLimited) as cm:
+                ClaudeCLI(model="opus", runner=runner, cwd="/tmp").json("p", {"type": "object"})
+            self.assertIs(cm.exception.worked, worked)
+
+
+class DreamCapTest(unittest.TestCase):
+    def test_a_developer_cut_off_again_and_again_is_asked_at_most_four_times_a_revision(self):
+        from drsi import dream
+        from tests.test_dream import DREAM_CFG, DreamTest as Base_
+        case = Base_("test_unchanged_file_is_not_deployed")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        n = {"calls": 0}
+
+        def dev(sandbox, prompt):
+            n["calls"] += 1
+            if n["calls"] > 40:
+                raise RuntimeError("the developer was asked again without end")
+            (sandbox / "method.py").write_text("# half-edited\n")
+            return AgentResult(ok=False, error="cut off", cut_off=True, limit_type="five_hour")
+        with mock.patch.object(dream, "wait_unless_stopping", return_value=True):
+            dream.run_dream(case.pdir, case.worlds, dev, DREAM_CFG, case.logs)
+        self.assertEqual(n["calls"], 4 * DREAM_CFG["dream"]["M"])
+
+
+class CheckCommandTest(unittest.TestCase):
+    def test_drsi_check_stopped_by_a_usage_limit_says_so_and_exits_7(self):
+        import io
+        import os
+        from contextlib import redirect_stderr, redirect_stdout
+        from drsi import cli
+        from drsi.store import Campaign, make_node
+        from tests.helpers import ScriptedLLM
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"DRSI_HOME": d}):
+            with redirect_stdout(io.StringIO()):
+                cli.main(["init", "s", "--goal", "g"])
+            Campaign.open("s").tree.add(make_node(id="1", parent=None, proposal="old idea"))
+
+            def judge(prompt, schema):
+                raise LLMLimited("claude -p refused for a usage limit: You've hit your session limit")
+            cli.LLM_FACTORY = lambda cfg, role: ScriptedLLM(judge)
+            self.addCleanup(setattr, cli, "LLM_FACTORY", None)
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                rc = cli.main(["check", "-c", "s", "a new idea"])
+        self.assertEqual(rc, 7)
+        self.assertIn("usage limit", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

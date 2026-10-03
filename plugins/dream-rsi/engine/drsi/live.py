@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
-from .agent import (LIMIT_MIN_WAIT_S, LIMIT_POLL_S, AgentResult, kill_all_children, limit_wait, refuse_if_stopping,
+from .agent import (LIMIT_MAX_CUT_OFFS, LIMIT_MIN_WAIT_S, LIMIT_POLL_S, AgentResult, kill_all_children, limit_wait, refuse_if_stopping,
                     register_child, stopped_by_limit, unregister_child, wait_unless_stopping)
 from .llm import LLMLimited
 from .dream import SEED_POLICY, run_dream
@@ -345,7 +345,9 @@ class LiveRunner:
         refusals, whatever their kind, and the call is made again, its own model first. A refusal's kind cannot say
         which models it binds (Claude Code reports the exceeded window that resets last), so none is trusted to. A
         call the limit cut off after the model had worked is treated the same, and `reset` (the caller's) undoes what
-        it did before the call is made again. A run that begins stopping ends the wait."""
+        it did before the call is made again, at most LIMIT_MAX_CUT_OFFS times: a usage limit stops a call once a window,
+        so a 429 after work that keeps coming is something else, and the call's failure then stands. A run that begins
+        stopping ends the wait."""
         kills: list = []
         if nid is not None:
             self._last.pop(nid, None)
@@ -359,6 +361,7 @@ class LiveRunner:
                 self._mem_kills.setdefault(nid, []).extend(kills)
 
     def _call_until_run(self, path, system, nid, reset, kills: list) -> AgentResult:
+        stopped_after_work = 0
         while True:
             res, part, refusals, other = self._try_call(path, system, nid, reset)
             kills += part
@@ -366,12 +369,19 @@ class LiveRunner:
                 self._last[nid] = res
             if not refusals:
                 break
+            cut_off = any(getattr(r, "cut_off", False) for r in refusals)
+            if cut_off:
+                stopped_after_work += 1
+                if stopped_after_work > LIMIT_MAX_CUT_OFFS:
+                    self.log(f"{nid}: a 429 stopped the call after work {stopped_after_work} times, more than a usage "
+                             "limit does; its failure stands")
+                    break
             secs = limit_wait(*refusals)
             kinds = ", ".join(sorted({str(getattr(r, "limit_type", None) or "unnamed") for r in refusals}))
             until = time.strftime("%H:%M", time.gmtime(time.time() + secs))
             self.log(f"{nid}: no model it may use can run ({kinds} usage limit); waiting until {until} UTC, then "
                      "trying again")
-            cut = any(getattr(r, "cut_off", False) for r in refusals) and reset is not None
+            cut = cut_off and reset is not None
             if not wait_unless_stopping(secs):
                 if other is not None and other == self.worker_fallback:  # stopped while the fallback was refused too
                     self._fallback_refused[nid] = other
@@ -423,14 +433,20 @@ class LiveRunner:
         return res, kills, (res, retry), other
 
     def _check(self, proposal: str, nid: str) -> dict:
-        """The novelty check, waiting while its calls are refused for a usage limit (a refused check is no verdict)."""
+        """The novelty check, waiting while its calls are stopped by a usage limit (a stopped check is no verdict): however
+        long for a refusal before any work, at most LIMIT_MAX_CUT_OFFS times for a call stopped after work."""
+        stopped_after_work = 0
         while True:
             try:
                 return self.checker(proposal, nid)
-            except LLMLimited:
+            except LLMLimited as e:
+                if getattr(e, "worked", False):
+                    stopped_after_work += 1
+                    if stopped_after_work > LIMIT_MAX_CUT_OFFS:
+                        raise
                 until = time.strftime("%H:%M", time.gmtime(time.time() + LIMIT_POLL_S))
-                self.log(f"{nid}: the novelty check was refused for a usage limit; waiting until {until} UTC, then "
-                         "checking again")
+                self.log(f"{nid}: the novelty check was stopped by a usage limit ({str(e)[:160]}); waiting until {until} "
+                         "UTC, then checking again")
                 if not wait_unless_stopping(LIMIT_POLL_S):
                     raise
                 self._limit_waits[nid] = self._limit_waits.get(nid, 0.0) + LIMIT_POLL_S
@@ -571,7 +587,7 @@ class LiveRunner:
             rec["fallback_refused"] = self._fallback_refused[nid]
         if self._limit_waits.get(nid):  # the time its calls waited for the account's usage limit to reset
             rec["waited_for_limit_s"] = round(self._limit_waits[nid])
-        if self._cut_offs.get(nid):  # calls the limit stopped after the model had worked (each undone)
+        if self._cut_offs.get(nid):  # calls a 429 stopped after the model had worked
             rec["cut_off_by_limit"] = self._cut_offs[nid]
         if nid in self._stopped_waiting:  # the run's stop found it waiting out a usage limit: its end is the stop's
             rec["stopped_in_limit_wait"] = True
