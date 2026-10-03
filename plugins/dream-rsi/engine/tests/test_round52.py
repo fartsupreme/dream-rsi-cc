@@ -16,6 +16,9 @@
 - Review (Grok): between linking npm's placeholder and setting its mode a spawn fails with EACCES, which is waited
   out too; a stop that comes as the binary reappears ends the wait with the original error, not the stopping run's;
   a missing working directory whose path happens to be the binary's (CPython then names that path) is not waited on.
+- Final check (Opus): a fallback call that could not be started dropped the call the limit stopped from the record
+  (its transcript and the memory cap's kills); the record keeps it. The dream no longer counts an error in building
+  its own prompt as a failed revision.
 """
 import errno
 import json
@@ -174,6 +177,26 @@ class RecordTest(unittest.TestCase):
         self.assertIn("claude", node["text"]["orchestrator_error"])
 
 
+class FallbackRecordTest(RecordTest):
+    def test_a_fallback_that_cannot_start_leaves_the_stopped_call_on_the_record(self):
+        camp = self.campaign({"worker_models": ["opus"], "worker_fallback": "fable"})
+
+        def run(workspace, prompt, system, model=None):
+            if "PHASE: PROPOSE" in system:
+                return AgentResult(ok=True, transcript="/x/propose.jsonl", structured={
+                    "proposal": "an idea", "summary": "", "self_reported_score": None, "notes": ""})
+            if model == "fable":
+                raise FileNotFoundError(2, "No such file or directory", "claude")
+            return AgentResult(ok=False, error="cut off", cut_off=True, limit_type="five_hour",
+                               transcript="/x/build.jsonl", mem_kills=[{"pid": 4242, "rss_gb": 2.5}])
+        r = LiveRunner(camp, run, indexer=lambda ids: None, round_id="iter0001", checker=fixed_checker("novel"))
+        out = r.run_batch([f"{ROOT}0"])
+        node = camp.tree.get(out[0]["id"])
+        self.assertEqual(node.get("fail_class"), "orchestrator_error")
+        self.assertEqual(node["worker"].get("transcript"), "/x/build.jsonl")
+        self.assertEqual(node["worker"].get("mem_kills"), [{"pid": 4242, "rss_gb": 2.5}])
+
+
 class DreamTest(unittest.TestCase):
     def test_a_developer_that_cannot_be_started_is_a_failed_revision_not_a_crashed_run(self):
         from drsi import dream
@@ -187,6 +210,16 @@ class DreamTest(unittest.TestCase):
         rep = dream.run_dream(case.pdir, case.worlds, dev, DREAM_CFG, case.logs)
         self.assertEqual([r["stage"] for r in rep["revisions"]], ["agent"] * DREAM_CFG["dream"]["M"])
         self.assertIn("FileNotFoundError", rep["revisions"][0]["error"])
+
+    def test_an_error_building_the_prompt_is_not_a_failed_revision(self):
+        from drsi import dream
+        from tests.test_dream import DREAM_CFG, DreamTest as Base_, Dev
+        case = Base_("test_unchanged_file_is_not_deployed")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        with mock.patch.object(dream, "build_prompt", side_effect=KeyError("dream.prompt")), \
+                self.assertRaises(KeyError):
+            dream.run_dream(case.pdir, case.worlds, Dev(), DREAM_CFG, case.logs)
 
 
 class RealExecTest(unittest.TestCase):

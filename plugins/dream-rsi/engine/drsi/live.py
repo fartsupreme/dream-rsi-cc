@@ -335,7 +335,8 @@ class LiveRunner:
                 if model:
                     return self.worker_fn(path, WORKER_PROMPT, system, model=model)
                 return self.worker_fn(path, WORKER_PROMPT, system)
-        except OSError:  # the call could not be started (no `claude` to run): the loop's failure, not the model's
+        except OSError:  # the call could not be started or the loop's own files failed (no `claude` to run, a
+            # transcript or the offload folder): the loop's failure, not the model's
             raise
         except Exception as e:  # noqa: BLE001 - a crashed worker is a recorded attempt, not a lost round
             return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
@@ -418,16 +419,16 @@ class LiveRunner:
         phase = "propose" if PROPOSE in system else "implement"
         how = "cut off by" if getattr(res, "cut_off", False) else "refused for"
         self.log(f"{nid}: {current} {how} its usage limit; the attempt continues on {other}")
-        if getattr(res, "cut_off", False) and reset is not None:
-            try:
+        try:
+            if getattr(res, "cut_off", False) and reset is not None:
                 reset()
-            except BaseException:  # the record still names the cut-off call and what the memory cap killed in it
-                self._last[nid] = res
-                self._mem_kills.setdefault(nid, []).extend(kills)
-                raise
-        if phase == "propose":
-            _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
-        retry = self._run_worker(path, system, other)
+            if phase == "propose":
+                _clear(self.proposal_file(nid))  # as before any proposal call: a stale one is never judged
+            retry = self._run_worker(path, system, other)
+        except BaseException:  # the record still names the stopped call and what the memory cap killed in it
+            self._last[nid] = res
+            self._mem_kills.setdefault(nid, []).extend(kills)
+            raise
         kills += getattr(retry, "mem_kills", None) or []
         if getattr(retry, "cut_off", False):
             self._cut_offs[nid] = self._cut_offs.get(nid, 0) + 1
