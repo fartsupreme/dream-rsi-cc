@@ -15,7 +15,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .agent import limit_wait, stopped_by_limit, wait_unless_stopping
+from .agent import LIMIT_MAX_CUT_OFFS, limit_wait, stopped_by_limit, wait_unless_stopping
 from .guard import ALLOWED_MODULES
 from .question import POLICY_HASH_SEED
 from .replay import CURVES, SCORES, _run_once, evaluate_policy, resampled_reward
@@ -360,7 +360,12 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
                 (sb / "REPORT.md").write_text(render_report(best_rep, revisions))
             fresh()
             res = developer(sb, build_prompt(cfg))
+            stopped_after_work = 0
             while stopped_by_limit(res):  # the limit's, not the revision's: wait, then ask again from a fresh sandbox
+                if getattr(res, "cut_off", False):
+                    stopped_after_work += 1
+                    if stopped_after_work > LIMIT_MAX_CUT_OFFS:  # more than a usage limit does: the revision fails
+                        break
                 if not wait_unless_stopping(limit_wait(res)):
                     break
                 if getattr(res, "cut_off", False):

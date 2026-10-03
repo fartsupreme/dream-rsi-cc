@@ -64,6 +64,8 @@ def allow_children() -> None:
 
 LIMIT_POLL_S = 600  # a wait for a usage limit checks again at least this often (an account switch ends it sooner)
 LIMIT_MIN_WAIT_S = 30
+LIMIT_MAX_CUT_OFFS = 3  # a call a 429 stopped after work is made again at most this often: a usage limit stops a call
+# once a window, so a 429 that keeps coming is something else (one that never clears), and the call's failure stands
 
 
 def limit_wait(*refusals) -> int:
@@ -510,11 +512,13 @@ def _refused_up_front(env: dict, tpath) -> bool:
 
 
 def _cut_off_by_limit(env: dict, tpath) -> bool:
-    """A call the usage limit stopped after the model had worked (2026-10-02: nine turns of a build, then the account's
-    five-hour window): an error result of status 429 that is not a short-term rate_limit_error, with the stream's last
-    usage event rejected or Claude Code's synthetic rate_limit message; without a stream, the result alone. A call that
-    failed for another reason is not this, whatever usage event came before (review of round 51)."""
-    if not (env.get("is_error") and env.get("api_error_status") == 429) or env.get("api_error") == "rate_limit_error":
+    """A call a 429 stopped that the stream does not show refused before any work, as a usage limit stops one after the
+    model has worked (2026-10-02: nine turns of a build, then the account's five-hour window): an error result of status
+    429, with the stream's last usage event rejected or Claude Code's synthetic rate_limit message; without a stream,
+    the result alone. Claude Code (2.1.288) retries a 429 that clears within a minute itself and gives every other one
+    the same shape, a usage limit's or not (no api_error tells them apart), so the caller makes such a call again only
+    LIMIT_MAX_CUT_OFFS times. A call that failed for another reason is not this, whatever usage event came before."""
+    if not (env.get("is_error") and env.get("api_error_status") == 429):
         return False
     if tpath:
         return _last_usage_status(tpath) == "rejected" or _limit_message(tpath)

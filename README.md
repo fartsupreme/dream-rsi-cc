@@ -50,7 +50,7 @@ repository. `drsi` only reads the projects it indexes, and the live loop works i
 | `drsi fingerprint -c NAME [--stale]` | classify attempts that lack a fingerprint; `--stale` also re-reads those read under an earlier goal |
 | `drsi families -c NAME [--rebuild\|--frontier\|--list]` | build/update families and untried directions |
 | `drsi map -c NAME` | print the map |
-| `drsi check -c NAME --file P` | novelty verdict for an in-session attempt; exit 0 novel, 3 variant, 4 duplicate, 5 off target, 6 retry |
+| `drsi check -c NAME --file P` | novelty verdict for an in-session attempt; exit 0 novel, 3 variant, 4 duplicate, 5 off target, 6 retry, 7 no verdict (a usage limit stopped the check) |
 | `drsi sync -c NAME` | re-import sources, index new attempts and rows corrected since import, rewrite the map |
 | `drsi config -c NAME --set a.b=JSON` | change settings |
 | `drsi baseline / run / dream / replay -c NAME` | the Dream-RSI loop |
@@ -347,15 +347,18 @@ expect a campaign's first rounds to find its loopholes.
   waits the same way when its calls are refused, and so does the dream's policy developer. A run that is stopped
   ends every wait. Without this, a limit turned every call of a round into a recorded failure within seconds, and
   the loop ran through rounds doing no work. A call the limit cuts off after the model has worked (an error result
-  of status 429 that is not a short-term `rate_limit_error`, with the stream's last usage event rejected or Claude
-  Code's synthetic `rate_limit` message) is treated the same, once what it did is undone: a build is made again on a
+  of status 429, with the stream's last usage event rejected or Claude Code's synthetic `rate_limit` message) is
+  treated the same, once what it did is undone: a build is made again on a
   fresh checkout at the attempt's start, a proposal on a fresh checkout, and what the call left in the attempt's
   proposal directory is cleared (the accepted proposal kept for a build); the policy developer is asked again in a
-  sandbox reset to the policy it was given. The attempt counts these calls in `worker.cut_off_by_limit`. A run
-  stopped during such a wait undoes the cut-off call too, so its half work is never recorded as the attempt's, and
-  the attempt records `worker.stopped_in_limit_wait`. The novelty check's calls are single prompts that change
-  nothing, so a usage limit there, before or after work, is waited out; a short-term `rate_limit_error` is tried again
-  at once.
+  sandbox reset to the policy it was given. The attempt counts these calls in `worker.cut_off_by_limit`. Claude Code
+  retries a 429 that clears within a minute itself and ends a call on any other with the same message, a usage
+  limit's or not, so a call stopped after work is made again at most three times and then its failure stands: a
+  usage limit stops a call once a window, and a 429 that keeps coming is something else. A refusal before any work is
+  waited out however long the limit lasts. A run stopped during such a wait undoes the cut-off call too, so its half
+  work is never recorded as the attempt's, and the attempt records `worker.stopped_in_limit_wait`. The novelty
+  check's calls are single prompts that change nothing, so a usage limit there is waited out the same way (a call
+  stopped after work at most three times), and `drsi check` stopped by one gives no verdict and exits 7.
 - **Transcripts:** every worker call (each proposal and the build) and every policy-developer call writes its whole
   session to `logs/workers/<attempt>/<UTC time>-<random>.jsonl` or `logs/developer/<UTC time>-<random>.jsonl` in the
   campaign. The first

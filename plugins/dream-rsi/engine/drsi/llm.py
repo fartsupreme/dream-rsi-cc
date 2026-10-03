@@ -20,16 +20,25 @@ class LLMError(RuntimeError):
 
 
 class LLMLimited(LLMError):
-    """The call was stopped by a usage limit, before or after the model worked (see _refused_before_work)."""
+    """The call was stopped by a 429, as a usage limit stops one (see _stopped_by_429). `worked` says whether the model
+    had worked first: a refusal before any work is waited out however long the limit lasts, a call stopped after work
+    only a few times (agent.LIMIT_MAX_CUT_OFFS)."""
+
+    def __init__(self, *args, worked: bool = False):
+        super().__init__(*args)
+        self.worked = worked
 
 
-def _refused_before_work(env: dict) -> bool:
-    """An error result of status 429 that is not a short-term rate_limit_error: refused for a usage limit, or cut off
-    by one after some work. A call here is one prompt that changes nothing, so either way it is made again once the
-    limit resets (round 51: a limit crossed after work was an orchestration failure). A short-term rate limit stays an
-    ordinary error, tried again at once."""
-    return (bool(env.get("is_error")) and env.get("api_error_status") == 429
-            and env.get("api_error") != "rate_limit_error")
+def _stopped_by_429(env: dict) -> bool:
+    """An error result of status 429. Claude Code (2.1.288) retries a 429 that clears within a minute itself and gives
+    every other one the same shape, a usage limit's or not, so one that reaches a result is waited out, never tried
+    again at once. A call here is one prompt that changes nothing, so one stopped after some work is made again as
+    well (round 51: a limit crossed between its turns was an orchestration failure)."""
+    return bool(env.get("is_error")) and env.get("api_error_status") == 429
+
+
+def _worked(env: dict) -> bool:
+    return (env.get("num_turns") or 0) > 1 or (env.get("duration_api_ms") or 0) > 0 or bool(env.get("modelUsage"))
 
 
 class ClaudeCLI:
@@ -69,8 +78,10 @@ class ClaudeCLI:
             refused = json.loads(proc.stdout) if proc.stdout else None
         except json.JSONDecodeError:
             refused = None
-        if isinstance(refused, dict) and _refused_before_work(refused):
-            raise LLMLimited(f"claude -p refused for a usage limit: {str(refused.get('result'))[:200]}")
+        if isinstance(refused, dict) and _stopped_by_429(refused):
+            worked = _worked(refused)
+            raise LLMLimited(f"claude -p {'stopped by' if worked else 'refused for'} a usage limit: "
+                             f"{str(refused.get('result'))[:200]}", worked=worked)
         if proc.returncode != 0:
             raise LLMError(f"claude -p exited {proc.returncode}: {(proc.stderr or proc.stdout)[-500:]}")
         try:

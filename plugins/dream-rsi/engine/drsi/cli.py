@@ -19,7 +19,7 @@ from .families import (assign_families, assign_new, build_frontier, build_taxono
 from .fingerprint import CLASSIFIER_SYSTEM, fingerprint_nodes
 from .importer import import_jsonl
 from . import offload
-from .llm import ClaudeCLI
+from .llm import ClaudeCLI, LLMLimited
 from .checks import pending_checks, run_check  # noqa: F401 - pending_checks is part of the CLI API
 from .novelty import render_check
 from .agent import ClaudeAgent
@@ -288,13 +288,20 @@ def cmd_map(a) -> int:
     return 0
 
 
+EXIT_LIMITED = 7  # drsi check: no verdict, a usage limit stopped the check
+
+
 def cmd_check(a) -> int:
     camp = resolve_campaign(a.campaign)
     proposal = Path(a.file).read_text() if a.file else " ".join(a.proposal)
     if not proposal.strip():
         _err("drsi check: give the proposal as text or --file")
         return 2
-    result = run_check(camp, proposal, make_llm(camp.config, "judge"), node=a.node)
+    try:
+        result = run_check(camp, proposal, make_llm(camp.config, "judge"), node=a.node)
+    except LLMLimited as e:
+        _err(f"drsi check: no verdict, the check was stopped by a usage limit ({e}); check again once it resets")
+        return EXIT_LIMITED
     print(json.dumps(result, indent=1, ensure_ascii=False) if a.json else render_check(result))
     return result["exit_code"]
 
