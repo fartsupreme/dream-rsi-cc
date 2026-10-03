@@ -359,8 +359,9 @@ def _run_dream(policy_dir, worlds: list[dict], developer, cfg: dict, log_dir) ->
                 (sb / "method.py").write_text(best_src)
                 (sb / "REPORT.md").write_text(render_report(best_rep, revisions))
             def ask():  # a developer that could not be started (no `claude` to run) fails its revision, not the run
+                prompt = build_prompt(cfg)
                 try:
-                    return developer(sb, build_prompt(cfg))
+                    return developer(sb, prompt)
                 except Exception as e:  # noqa: BLE001
                     return AgentResult(ok=False, error=f"{type(e).__name__}: {e}")
             fresh()
