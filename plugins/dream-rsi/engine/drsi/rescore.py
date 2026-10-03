@@ -24,8 +24,12 @@ from .worlds import worlds_lock
 
 
 def scorable(node: dict) -> bool:
-    return (node.get("source") == "live" and bool((node.get("artifacts") or {}).get("commit"))
-            and node.get("fail_class") is not None and node.get("fail_class") not in PROCEDURAL)
+    art = node.get("artifacts") or {}
+    if node.get("source") != "live" or not art.get("commit"):
+        return False
+    if (node.get("worker") or {}).get("stopped_by_run"):  # a finished build the run's stop left unscored (round 53)
+        return bool(art.get("changed"))
+    return node.get("fail_class") is not None and node.get("fail_class") not in PROCEDURAL
 
 
 def rescore(camp: Campaign, ids: set[str] | None = None, parallel: int = 1, log=lambda msg: None) -> dict:

@@ -448,7 +448,11 @@ class LiveRunner:
         stopped_after_work = 0
         while True:
             try:
-                return self.checker(proposal, nid)
+                result = self.checker(proposal, nid)
+                if self._aborting:  # its calls may have been killed with the run (a failed confirmation reads as a
+                    # duplicate): a check the stop interrupted gives no verdict (round 53)
+                    raise RuntimeError("the run was stopped during the novelty check; its verdict is not kept")
+                return result
             except LLMLimited as e:
                 if getattr(e, "worked", False):
                     stopped_after_work += 1
@@ -513,6 +517,8 @@ class LiveRunner:
                              reset=fresh_build)
             return self._finish(job, res, check, checks)
         except Exception as e:  # noqa: BLE001 - an orchestration failure says nothing about the idea
+            if self._aborting:  # a novelty check or a scoring the run's stop interrupted (round 53)
+                self._stopped_by_run.add(nid)
             try:
                 with self._git_lock:
                     self.ws.remove(path)
@@ -535,8 +541,9 @@ class LiveRunner:
         parent = self.camp.tree.get(parent_id) if parent_id else None
         start = self.ws.start_for((parent or {}).get("artifacts", {}).get("commit"))
         nested: list[str] = []
-        if self._aborting and not res.ok and no_commit is None:  # the run's stop cut the call short: a half build
-            no_commit = start  # is not the attempt's work
+        stopped_call = self._aborting and not res.ok  # read once, here: the run's stop cut the call short, so a half
+        if stopped_call and no_commit is None:  # build is not the attempt's work; a call that failed before the stop
+            no_commit = start  # stays its model's failure, whenever the stop lands (round 53)
         if no_commit is not None:  # nothing was built: the attempt owns no code of its own
             commit, changed, links, gitlinks = no_commit, [], [], []
         else:
@@ -559,7 +566,7 @@ class LiveRunner:
         if not cfg["workspace"].get("keep_worktrees"):
             with self._git_lock:
                 self.ws.remove(path)  # nothing on disk but the commit itself can reach the scorer
-        sc = {}
+        sc, scored = {}, False
         if not_novel:
             fields["fail_class"] = "not_novel"
         elif not res.ok:
@@ -567,17 +574,25 @@ class LiveRunner:
         elif oos:
             fields["fail_class"] = "out_of_scope"
         else:
-            sc = self._score(commit, nid)
+            try:
+                sc = self._score(commit, nid)
+            except RuntimeError:  # the stopping run refuses to start its scorer: the build stands, unscored
+                if not self._aborting:
+                    raise
+                sc = {"score": None, "valid": False, "gates": {}, "fail_class": "scorer_error",
+                      "error": "the run was stopped before this attempt was scored"}
+            scored = True
             fields = {"score": sc["score"], "valid": sc["valid"], "gates": sc["gates"],
                       "fail_class": sc["fail_class"]}
         text = {"summary": str(report.get("summary", ""))[:1500], "notes": str(report.get("notes", ""))[:800],
                 "worker_error": res.error[:500]}
-        if self._aborting and not fields["valid"] and fields["fail_class"] not in ("not_novel", "out_of_scope"):
-            # ended after the run began stopping, its call or its scoring killed with the run: the loop's failure,
-            # never its model's (round 53: each restart recorded its next round's first six calls as agent_error)
+        if stopped_call or (scored and not fields["valid"] and self._aborting):
+            # its call, or its scoring, ended with the run: the loop's failure, never its model's (round 53: each
+            # restart recorded its next round's first six calls as agent_error). A finished build stays recorded
+            # for `drsi rescore`; a verdict reached before the stop (not novel, out of scope) is kept
             self._stopped_by_run.add(nid)
             fields = {"score": None, "valid": False, "gates": {}, "fail_class": "orchestrator_error"}
-            text["orchestrator_error"] = "the run was stopped while this attempt ran"
+            text["orchestrator_error"] = "the run was stopped or aborted while this attempt ran"
         if no_commit is not None and not cfg["workspace"].get("keep_worktrees") and path.exists():
             with self._git_lock:
                 self.ws.remove(path)
@@ -829,24 +844,53 @@ def _has_signal(worlds: list[dict]) -> bool:
 
 
 STOP_REQUEST = "stop_after_round"  # logs/<this>: `drsi stop --after-round` asks the run to end at a round boundary
+STOPPED_AT = "stopped_after_round"  # logs/<this>: the run that took such a request, and after which round
 
 
-def request_stop_after_round(camp: Campaign) -> None:
-    """Ask the campaign's run to end once the round under way has frozen its world and run its dream (round 53)."""
+def request_stop_after_round(camp: Campaign, run: int) -> None:
+    """Ask the campaign's run (process `run`) to end once the round under way has frozen its world and run its
+    dream (round 53)."""
     path = camp.root / "logs" / STOP_REQUEST
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(utcnow() + "\n")
+    _atomic_write(path, json.dumps({"run": int(run), "asked": utcnow()}) + "\n")
 
 
 def stop_requested(camp: Campaign) -> bool:
     return (camp.root / "logs" / STOP_REQUEST).exists()
 
 
-def take_stop_request(camp: Campaign) -> bool:
-    """Withdraw the request; True if there was one."""
+def _requested_run(camp: Campaign) -> int | None:
+    try:
+        return int(json.loads((camp.root / "logs" / STOP_REQUEST).read_text())["run"])
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        return None
+
+
+def stop_at_boundary(camp: Campaign, run: int, round_id: str) -> bool:
+    """At a round boundary of run `run`: take its request, if there is one, and say so for `drsi stop --wait`."""
+    if not take_stop_request(camp, run):
+        return False
+    _atomic_write(camp.root / "logs" / STOPPED_AT, json.dumps({"run": int(run), "after": round_id,
+                                                               "at": utcnow()}) + "\n")
+    return True
+
+
+def stopped_at_boundary(camp: Campaign, run: int) -> str | None:
+    """The round after which run `run` took a `drsi stop --after-round` request, or None if it took none."""
+    try:
+        data = json.loads((camp.root / "logs" / STOPPED_AT).read_text())
+        return str(data["after"]) if int(data["run"]) == int(run) else None
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        return None
+
+
+def take_stop_request(camp: Campaign, run: int | None = None) -> bool:
+    """Withdraw the request; True if there was one, for `run` when it is given (one for another run is stale: it is
+    withdrawn and does not count)."""
+    mine = run is None or _requested_run(camp) == run
     try:
         (camp.root / "logs" / STOP_REQUEST).unlink()
-        return True
+        return mine
     except FileNotFoundError:
         return False
 
@@ -857,10 +901,11 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
     policy_dir.mkdir(exist_ok=True)
     if not (policy_dir / "method.py").exists():
         (policy_dir / "method.py").write_text(SEED_POLICY.read_text())
-    rounds = []
-    take_stop_request(camp)  # one left by an earlier run is not this run's to take
+    rounds, me = [], os.getpid()  # the run is this process: `drsi stop --after-round` names it in its request
+    if stop_requested(camp) and _requested_run(camp) != me:
+        take_stop_request(camp)  # one left for an earlier run is not this run's
     for _ in range(n):
-        if rounds and take_stop_request(camp):  # `drsi stop --after-round`: the last round's world and dream are done
+        if rounds and stop_at_boundary(camp, me, rounds[-1]["round_id"]):  # `drsi stop --after-round`: the last round's world and dream are done
             say(f"{rounds[-1]['round_id']}: stopping at the round boundary, as `drsi stop --after-round` asked")
             break
         round_id = next_round_id(camp)
@@ -887,5 +932,6 @@ def run_cycles(camp: Campaign, n: int, worker_fn, developer, indexer, checker=No
         rounds.append(summary | {"dream": {"deployed": d["deployed"], "version": d["version"],
                                            "incumbent_reward": d["incumbent_reward"], "best_reward": d["best_reward"]}})
     else:
-        take_stop_request(camp)  # the run ends at a round boundary anyway: a request made in its last round is met
+        if rounds:  # the run ends at a round boundary anyway: a request made in its last round is met
+            stop_at_boundary(camp, me, rounds[-1]["round_id"])
     return {"rounds": rounds}

@@ -187,6 +187,14 @@ class Registry:
             self._data.update(guardian=pid, guardian_start=started or None)
             _write(self.path, self._data)
 
+    def note(self, **fields) -> None:
+        """Record what this run supports (`stops_after_round`), for `drsi stop` to read."""
+        with self._lock:
+            if self._closed:
+                return
+            self._data.update(fields)
+            _write(self.path, self._data)
+
     def add(self, pid: int) -> None:
         started = start_time(pid) or None  # unknown: never killed by pid, the tree and the sweep still cover it
         with self._lock:

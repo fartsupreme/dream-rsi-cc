@@ -443,6 +443,9 @@ def cmd_stop(a) -> int:
         print("no run is recorded for this campaign; nothing to stop")
         return 0
     run, started = guardian.identity(data)
+    if a.wait and not a.after_round:
+        _err("drsi stop: --wait goes with --after-round (a plain stop always waits for the run to end)")
+        return 2
 
     def wait_free(secs: float) -> bool:
         end = time.time() + secs
@@ -452,7 +455,7 @@ def cmd_stop(a) -> int:
             time.sleep(0.2)
         return True
     if a.after_round:
-        return _ask_after_round(a, camp, path, run, started)
+        return _ask_after_round(a, camp, path, data, run, started)
     if guardian.run_lock_held(path):
         if guardian.alive(run, started) is not True:
             print(f"the campaign's run lock is held, but process {run} cannot be confirmed as its run; "
@@ -598,31 +601,37 @@ def _run_lock(camp: Campaign):
     return fh
 
 
-def _ask_after_round(a, camp, path, run, started) -> int:
-    """`drsi stop --after-round`: the round under way finishes (its world frozen, its dream run) and the run exits
-    before it starts another, so a restart kills no attempt half done (round 53). With --wait, return once the run has
-    ended; a request the run never took (it ended some other way first) is withdrawn, not left for the next run."""
+def _ask_after_round(a, camp, path, data: dict, run, started) -> int:
+    """`drsi stop --after-round`: the round under way finishes (its world frozen, its dream step taken) and the run exits
+    before it starts another, so a restart kills no attempt half done (round 53). The request names the run, so no
+    later run takes it. With --wait, return once the run has ended: 0 at the round boundary, 1 if it ended some other
+    way first (the request it never took is withdrawn)."""
     from . import guardian
-    from .live import request_stop_after_round, take_stop_request
+    from .live import _requested_run, request_stop_after_round, stopped_at_boundary, take_stop_request
     if not guardian.run_lock_held(path):
         print("no run is running for this campaign; nothing to ask")
         return 0
     if guardian.alive(run, started) is not True:
         print(f"the campaign's run lock is held, but process {run} cannot be confirmed as its run; nothing was asked")
         return 1
-    request_stop_after_round(camp)
-    current = camp.root / "logs" / "current_round"
-    now = current.read_text().strip() if current.exists() else "the round under way"
-    print(f"run {run} stops at the round boundary: {now} finishes, freezes its world and runs its dream, and no "
-          "further round starts")
+    if not data.get("stops_after_round"):
+        print(f"run {run} was started by a drsi without --after-round and would never see the request; nothing was "
+              "asked. Stop it with `drsi stop` once its round has finished")
+        return 2
+    request_stop_after_round(camp, int(run))
+    print(f"run {run} stops at its next round boundary: the round under way finishes, freezes its world and takes its "
+          "dream step, and no further round starts")
     if not a.wait:
         return 0
-    while guardian.run_lock_held(path):
-        time.sleep(2)
-    if take_stop_request(camp):
+    while guardian.run_lock_held(path) and guardian.alive(run, started) is not False:  # as long as the round takes
+        time.sleep(2)  # (this run's own life: a later holder of the lock is another run)
+    after = stopped_at_boundary(camp, int(run))  # what the run itself recorded, never inferred from the file's absence
+    if after is None:
+        if _requested_run(camp) == int(run):
+            take_stop_request(camp)  # not left for a later run to find
         print(f"run {run} ended before its round boundary; the request is withdrawn")
-    else:
-        print(f"run {run} stopped at the round boundary")
+        return 1
+    print(f"run {run} stopped at the round boundary, after {after}")
     return 0
 
 
@@ -645,6 +654,7 @@ def cmd_run(a) -> int:
             return 2
     registry = guardian.Registry(reg_path, camp.root / "work")
     registry.open()
+    registry.note(stops_after_round=True)  # `drsi stop --after-round` asks only a run that will see the request
     guard = guardian.spawn_guardian(reg_path)
     registry.set_guardian(guard.pid)
 
