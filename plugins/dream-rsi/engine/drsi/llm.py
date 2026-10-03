@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-from .agent import call_env, run_group
+from .agent import call_env, run_claude, run_group
 from .store import default_home
 
 
@@ -70,8 +70,8 @@ class ClaudeCLI:
                 neutral = default_home() / "_neutral"
                 neutral.mkdir(parents=True, exist_ok=True)
                 cwd = str(neutral)
-            proc = self.runner(self.build_args(schema), input=prompt, capture_output=True,
-                               text=True, timeout=self.timeout, cwd=cwd, env=call_env())
+            proc = run_claude(self.runner, self.build_args(schema), input=prompt, capture_output=True,
+                              text=True, timeout=self.timeout, cwd=cwd, env=call_env())
         except subprocess.TimeoutExpired as e:
             raise LLMError(f"claude -p timed out after {self.timeout}s") from e
         try:  # a refusal for a usage limit exits 1 with its result on stdout
